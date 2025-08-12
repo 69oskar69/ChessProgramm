@@ -1107,7 +1107,8 @@ public class ChessGUI {
         BoardPanel(){
             setPreferredSize(new Dimension(MARGIN*2 + TILE*8 + 8, MARGIN*2 + TILE*8 + 8));
             setBackground(new Color(24,28,28));
-            setFocusable(true);
+            setFocusable(true);            // wichtig für Keyboard-Shortcuts
+            setDoubleBuffered(true);       // flüssiges Neuzeichnen beim Draggen
 
             MouseAdapter ma = new MouseAdapter(){
                 @Override public void mousePressed(MouseEvent e){ onPress(e); }
@@ -1161,12 +1162,16 @@ public class ChessGUI {
         }
         private void onDrag(MouseEvent e){
             if(!dragging || busy || animating) return;
+            // Mausposition merken und Brett neu zeichnen
             dragX=e.getX(); dragY=e.getY();
             repaint();
         }
         private void onRelease(MouseEvent e){
             if(!dragging) return;
-            int dest = pointToSquare(e.getX(), e.getY());
+            // Finale Mausposition übernehmen – der letzte mouseDragged kann fehlen
+            dragX=e.getX(); dragY=e.getY();
+            // Zielkachel anhand der letzten bekannten Drag-Position ermitteln
+            int dest = pointToSquare(dragX, dragY);
             List<Move> candidates = legalFromSelected.stream().filter(m -> m.to==dest).collect(Collectors.toList());
             if(candidates.isEmpty()){
                 // Kein legaler Drop: zurückfallen lassen
@@ -1309,11 +1314,11 @@ public class ChessGUI {
                         drawGlyph(g2,fm,p, MARGIN+4+f*TILE, MARGIN+4+r*TILE);
                     }
                 }
-                // Ziehendes Stück oben drüber
+                // Ziehendes Stück semi-transparent am Cursor zeichnen
                 if(dragging && dragPiece!=null){
                     int x = dragX - dragOffsetX;
                     int y = dragY - dragOffsetY;
-                    drawGlyph(g2,fm,dragPiece, x, y);
+                    drawGlyph(g2,fm,dragPiece, x, y, 0.75f);
                 }
             }
 
@@ -1369,12 +1374,19 @@ public class ChessGUI {
         }
 
         private void drawGlyph(Graphics2D g2, FontMetrics fm, Piece p, int x, int y){
+            drawGlyph(g2, fm, p, x, y, 1f);
+        }
+        // alpha=1.0 => normal, <1.0 => transparent (für Dragging)
+        private void drawGlyph(Graphics2D g2, FontMetrics fm, Piece p, int x, int y, float alpha){
             String s=String.valueOf(p.symbolUnicode());
             int tx=x + (TILE - fm.stringWidth(s))/2;
             int ty=y + (TILE + fm.getAscent() - fm.getDescent())/2;
+            Composite old=g2.getComposite();
+            g2.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, alpha));
             g2.setColor(new Color(0,0,0,90)); g2.drawString(s, tx+2, ty+2);
             g2.setColor(p.side==Side.WHITE? Color.WHITE : Color.BLACK);
             g2.drawString(s, tx, ty);
+            g2.setComposite(old);
         }
         private Font getBestPieceFont(int px){
             Font f = new Font("Segoe UI Symbol", Font.PLAIN, px);
