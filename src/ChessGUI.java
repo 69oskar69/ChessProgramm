@@ -1109,6 +1109,9 @@ public class ChessGUI {
             setBackground(new Color(24,28,28));
             setFocusable(true);            // wichtig für Keyboard-Shortcuts
             setDoubleBuffered(true);       // flüssiges Neuzeichnen beim Draggen
+            // Tastatur-Shortcuts und Drag&Drop reagieren erst zuverlässig,
+            // wenn das Panel selbst den Fokus hält
+            SwingUtilities.invokeLater(this::requestFocusInWindow);
 
             MouseAdapter ma = new MouseAdapter(){
                 @Override public void mousePressed(MouseEvent e){ onPress(e); }
