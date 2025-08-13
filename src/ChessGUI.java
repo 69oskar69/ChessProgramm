@@ -1187,17 +1187,7 @@ public class ChessGUI {
             dragOffsetX = dragX - tl.x;
             dragOffsetY = dragY - tl.y;
 
-            // regelmäßiges Polling der Mausposition, falls außerhalb keine Events eintreffen
-            dragTimer = new Timer(1000/60, ev -> {
-                PointerInfo info = MouseInfo.getPointerInfo();
-                if(info != null){
-                    Point loc = info.getLocation();
-                    SwingUtilities.convertPointFromScreen(loc, BoardPanel.this);
-                    dragX = loc.x;
-                    dragY = loc.y;
-                }
-                repaint();
-            });
+
             dragTimer.start();
 
             // Globale Maus-Events beobachten, damit Drag außerhalb des Panels weiterläuft
