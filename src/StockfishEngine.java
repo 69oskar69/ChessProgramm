@@ -1,60 +1,130 @@
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
+import java.io.*;
+import java.nio.file.*;
+import java.util.Objects;
 
 /**
- * Minimal Stockfish engine helper that reads the path to the Stockfish
- * executable from a configuration file. The configuration file is named
- * {@code stockfish.path} and must contain the absolute path to the
- * Stockfish binary in its first non-empty, non-comment line.
+ * Simple helper around a Stockfish process. It can send commands and
+ * retrieve best moves for a given position.
  */
 public class StockfishEngine {
     private final String path;
-
-    public StockfishEngine() {
-        this.path = loadPath();
-        validateExecutable();
-    }
+    private Process process;
+    private BufferedWriter writer;
+    private BufferedReader reader;
 
     /**
-     * Returns the configured path to the Stockfish executable.
+     * Uses the path from {@code stockfish.path} if present or defaults to
+     * the executable named {@code stockfish}.
      */
+    public StockfishEngine() {
+        this(loadPathFromConfig());
+    }
+
+    public StockfishEngine(String path) {
+        this.path = path == null || path.isBlank() ? "stockfish" : path;
+    }
+
     public String getPath() {
         return path;
     }
 
-    private String loadPath() {
-        Path config = Paths.get("stockfish.path");
-        if (!Files.exists(config)) {
-            throw new IllegalStateException("Missing configuration file stockfish.path");
-        }
-        try (BufferedReader br = Files.newBufferedReader(config)) {
-            String line;
-            while ((line = br.readLine()) != null) {
-                line = line.trim();
-                if (line.isEmpty() || line.startsWith("#")) {
-                    continue;
-                }
-                return line;
-            }
-        } catch (IOException e) {
-            throw new RuntimeException("Failed to read stockfish.path", e);
-        }
-        throw new IllegalStateException("No path specified in stockfish.path");
+    /** Starts the Stockfish process and performs a basic UCI handshake. */
+    public void start() throws IOException {
+        if (process != null) return;
+        ProcessBuilder pb = new ProcessBuilder(path);
+        pb.redirectErrorStream(true);
+        process = pb.start();
+        writer = new BufferedWriter(new OutputStreamWriter(process.getOutputStream()));
+        reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+        sendCommand("uci");
+        readUntil("uciok");
+        sendCommand("isready");
+        readUntil("readyok");
     }
 
-    private void validateExecutable() {
-        Path exec = Paths.get(path);
-        if (!Files.exists(exec)) {
-            throw new IllegalStateException("Stockfish executable not found: " + path);
+    /** Stops the Stockfish process. */
+    public void stop() {
+        if (process != null) {
+            try { sendCommand("quit"); } catch (IOException ignored) {}
+            process.destroy();
+            process = null;
         }
-        if (!Files.isRegularFile(exec)) {
-            throw new IllegalStateException("Stockfish path is not a file: " + path);
+    }
+
+    /** Sends an arbitrary command to the engine. */
+    public void sendCommand(String cmd) throws IOException {
+        if (writer == null) throw new IllegalStateException("Engine not started");
+        writer.write(cmd);
+        writer.newLine();
+        writer.flush();
+    }
+
+    /** Reads a single line from the engine. */
+    public String readResponse() throws IOException {
+        if (reader == null) throw new IllegalStateException("Engine not started");
+        return reader.readLine();
+    }
+
+    private void readUntil(String token) throws IOException {
+        String line;
+        while ((line = readResponse()) != null) {
+            if (line.contains(token)) break;
         }
-        if (!Files.isExecutable(exec)) {
-            throw new IllegalStateException("Stockfish file is not executable: " + path);
+    }
+
+    /**
+     * Queries the engine for the best move in the given position.
+     *
+     * @param fen   FEN representation of the position
+     * @param depth search depth
+     * @return best move or {@code null} if none available
+     */
+    public ChessGUI.Move getBestMove(String fen, int depth) throws IOException {
+        sendCommand("position fen " + fen);
+        sendCommand("go depth " + depth);
+        ChessGUI.Board board = ChessGUI.Board.fromFEN(fen);
+        String line;
+        while ((line = readResponse()) != null) {
+            if (line.startsWith("bestmove")) {
+                String[] parts = line.split("\\s+");
+                if (parts.length < 2) return null;
+                String mv = parts[1];
+                int from = ChessGUI.UCI.parseSquare(mv.substring(0, 2));
+                int to = ChessGUI.UCI.parseSquare(mv.substring(2, 4));
+                ChessGUI.PieceType promo = null;
+                if (mv.length() >= 5) {
+                    promo = switch (mv.charAt(4)) {
+                        case 'q' -> ChessGUI.PieceType.QUEEN;
+                        case 'r' -> ChessGUI.PieceType.ROOK;
+                        case 'b' -> ChessGUI.PieceType.BISHOP;
+                        case 'n' -> ChessGUI.PieceType.KNIGHT;
+                        default -> null;
+                    };
+                }
+                for (ChessGUI.Move m : board.legalMoves()) {
+                    if (m.from == from && m.to == to && Objects.equals(m.promotion, promo)) {
+                        return m;
+                    }
+                }
+                return new ChessGUI.Move(from, to, promo, false, false, false, false);
+            }
         }
+        return null;
+    }
+
+    private static String loadPathFromConfig() {
+        Path cfg = Paths.get("stockfish.path");
+        if (Files.exists(cfg)) {
+            try (BufferedReader br = Files.newBufferedReader(cfg)) {
+                String line;
+                while ((line = br.readLine()) != null) {
+                    line = line.trim();
+                    if (!line.isEmpty() && !line.startsWith("#")) {
+                        return line;
+                    }
+                }
+            } catch (IOException ignored) {}
+        }
+        return "stockfish";
     }
 }
