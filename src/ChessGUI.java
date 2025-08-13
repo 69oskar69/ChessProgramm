@@ -19,6 +19,7 @@ import java.util.Hashtable;
 import java.util.stream.Collectors;
 import java.util.Comparator;
 import javax.swing.event.MouseInputAdapter;
+import java.util.stream.IntStream;
 
 
 /**
@@ -81,6 +82,32 @@ public class ChessGUI {
         }
         boolean isPromotion(){ return promotion!=null; }
         @Override public String toString(){ return UCI.fromTo(from,to) + (promotion!=null? UCI.promoChar(promotion): ""); }
+        @Override public boolean equals(Object o){
+            if(this==o) return true;
+            if(!(o instanceof Move m)) return false;
+            return from==m.from && to==m.to && promotion==m.promotion && castleK==m.castleK && castleQ==m.castleQ && enPassant==m.enPassant;
+        }
+        @Override public int hashCode(){
+            return Objects.hash(from,to,promotion,castleK,castleQ,enPassant);
+        }
+    }
+
+    // Zobrist hashing for transposition table keys
+    static final class Zobrist {
+        static final long[][] PIECE = new long[12][64];
+        static final long SIDE;
+        static final long[] CASTLE = new long[16];
+        static final long[] EP = new long[8];
+        static {
+            Random r = new Random(2024);
+            for(int i=0;i<12;i++) for(int j=0;j<64;j++) PIECE[i][j]=r.nextLong();
+            SIDE = r.nextLong();
+            for(int i=0;i<16;i++) CASTLE[i]=r.nextLong();
+            for(int i=0;i<8;i++) EP[i]=r.nextLong();
+        }
+        static int pieceIndex(Piece p){
+            return p.type.ordinal() + (p.side==Side.WHITE?0:6);
+        }
     }
 
     static final class Board {
@@ -167,6 +194,18 @@ public class ChessGUI {
             return b;
         }
         Piece at(int i){ return (i>=0&&i<64)?sq[i]:null; }
+        long hash(){
+            long h=0;
+            for(int i=0;i<64;i++){
+                Piece p=sq[i];
+                if(p!=null) h^=Zobrist.PIECE[Zobrist.pieceIndex(p)][i];
+            }
+            int castle=(wCastleK?1:0)|(wCastleQ?2:0)|(bCastleK?4:0)|(bCastleQ?8:0);
+            h^=Zobrist.CASTLE[castle];
+            if(enPassant!=-1) h^=Zobrist.EP[file(enPassant)];
+            if(sideToMove==Side.WHITE) h^=Zobrist.SIDE;
+            return h;
+        }
         int kingSquare(Side s){ for(int i=0;i<64;i++){ Piece p=sq[i]; if(p!=null&&p.type==PieceType.KING&&p.side==s) return i; } return -1; }
 
         boolean isInCheck(Side s){ int k=kingSquare(s); return isSquareAttacked(k, s.opposite()); }
@@ -441,6 +480,9 @@ public class ChessGUI {
         }
         static int evaluate(Board b){
             int score=0;
+            int[] wpFile=new int[8];
+            int[] bpFile=new int[8];
+            int whiteBishops=0, blackBishops=0;
             for(int i=0;i<64;i++){
                 Piece p=b.sq[i]; if(p==null) continue;
                 int pst = switch(p.type){
@@ -453,77 +495,244 @@ public class ChessGUI {
                 };
                 int s = val(p.type)+pst;
                 score += (p.side==Side.WHITE)? s : -s;
+                if(p.type==PieceType.BISHOP){ if(p.side==Side.WHITE) whiteBishops++; else blackBishops++; }
+                if(p.type==PieceType.PAWN){
+                    int f=Board.file(i);
+                    if(p.side==Side.WHITE) wpFile[f]++; else bpFile[f]++;
+                }
             }
-            int mob = b.legalMoves().size();
-            score += (b.sideToMove==Side.WHITE?1:-1) * (mob/3);
+            if(whiteBishops>=2) score+=30;
+            if(blackBishops>=2) score-=30;
+
+            for(int f=0;f<8;f++){
+                if(wpFile[f]>1) score -=10*(wpFile[f]-1);
+                if(bpFile[f]>1) score +=10*(bpFile[f]-1);
+            }
+
+            for(int i=0;i<64;i++){
+                Piece p=b.sq[i]; if(p==null || p.type!=PieceType.PAWN) continue;
+                int f=Board.file(i), r=Board.rank(i);
+                int dir=p.side==Side.WHITE?1:-1;
+                boolean isolated = (p.side==Side.WHITE?
+                        ((f>0?wpFile[f-1]:0)==0 && (f<7?wpFile[f+1]:0)==0):
+                        ((f>0?bpFile[f-1]:0)==0 && (f<7?bpFile[f+1]:0)==0));
+                if(isolated) score += p.side==Side.WHITE?-15:15;
+                boolean passed=true;
+                for(int df=-1; df<=1 && passed; df++){
+                    int nf=f+df; if(nf<0||nf>7) continue;
+                    for(int nr=r+dir; nr>=0 && nr<8; nr+=dir){
+                        Piece q=b.sq[Board.idx(nf,nr)];
+                        if(q!=null && q.type==PieceType.PAWN && q.side!=p.side){ passed=false; break; }
+                    }
+                }
+                if(passed){
+                    int bonus=50 + (p.side==Side.WHITE? r : 7-r)*10;
+                    score += p.side==Side.WHITE? bonus : -bonus;
+                } else {
+                    int frontRank=r+dir;
+                    if(Board.in(f,frontRank) && b.sq[Board.idx(f,frontRank)]==null){
+                        boolean enemyControl=false;
+                        for(int df=-1; df<=1; df+=2){
+                            int nf=f+df; if(nf<0||nf>7) continue;
+                            Piece q=b.sq[Board.idx(nf,frontRank)];
+                            if(q!=null && q.type==PieceType.PAWN && q.side!=p.side) enemyControl=true;
+                        }
+                        boolean support=false;
+                        int backRank=r-dir;
+                        if(Board.in(f,backRank)){
+                            Piece q=b.sq[Board.idx(f,backRank)];
+                            if(q!=null && q.type==PieceType.PAWN && q.side==p.side) support=true;
+                        }
+                        if(enemyControl && !support) score += p.side==Side.WHITE? -10:10;
+                    }
+                }
+            }
+
+            for(int i=0;i<64;i++){
+                Piece p=b.sq[i]; if(p==null || p.type!=PieceType.ROOK) continue;
+                int f=Board.file(i);
+                boolean friendlyPawn = (p.side==Side.WHITE? wpFile[f]>0 : bpFile[f]>0);
+                boolean enemyPawn = (p.side==Side.WHITE? bpFile[f]>0 : wpFile[f]>0);
+                if(!friendlyPawn){
+                    int bonus=15;
+                    if(!enemyPawn) bonus+=10;
+                    score += p.side==Side.WHITE? bonus : -bonus;
+                }
+            }
+
+            for(Side s: Side.values()){
+                int k=b.kingSquare(s);
+                int kf=Board.file(k), kr=Board.rank(k);
+                int dir=s==Side.WHITE?1:-1;
+                int shield=0;
+                for(int df=-1; df<=1; df++){
+                    int nf=kf+df; int nr=kr+dir;
+                    if(Board.in(nf,nr)){
+                        Piece q=b.sq[Board.idx(nf,nr)];
+                        if(q!=null && q.type==PieceType.PAWN && q.side==s) shield++;
+                    }
+                }
+                score += (s==Side.WHITE?1:-1)*(shield*15 - (3-shield)*15);
+            }
+
+            score += mobility(b,Side.WHITE) - mobility(b,Side.BLACK);
             return score;
+        }
+
+        static int mobility(Board b, Side s){
+            Side old=b.sideToMove;
+            b.sideToMove=s;
+            List<Move> moves=b.pseudoMoves();
+            b.sideToMove=old;
+            int mob=0;
+            for(Move m: moves){
+                Piece p=b.sq[m.from];
+                mob += switch(p.type){
+                    case KNIGHT -> 4;
+                    case BISHOP -> 5;
+                    case ROOK -> 2;
+                    case QUEEN -> 1;
+                    default -> 0;
+                };
+            }
+            return mob;
         }
     }
 
     static final class AI {
         static final int MATE = 1_000_000;
+        static final int MAX_PLY = 64;
         private int maxDepth;
-        AI(int d){ maxDepth=Math.max(1,d); }
+        private final TranspositionTable tt = new TranspositionTable(1<<20);
+        private final int[] killer1 = new int[MAX_PLY];
+        private final int[] killer2 = new int[MAX_PLY];
+        private final int[][] history = new int[2][64*64];
+        AI(int d){ setDepth(d); }
         int getDepth(){ return maxDepth; }
         void setDepth(int d){ maxDepth=Math.max(1,d); }
 
         Move findBestMove(Board b){
-            List<Move> moves=b.legalMoves();
-            if(moves.isEmpty()) return null;
-            moves.sort((a,c)-> Boolean.compare((c.isCapture||c.isPromotion()), (a.isCapture||a.isPromotion())));
-            int bestScore=Integer.MIN_VALUE; Move best=moves.get(0);
-            for(Move m: moves){
-                int s = scoreMove(b, m, maxDepth);
-                if(s>bestScore){ bestScore=s; best=m; }
+            Move best=null;
+            for(int depth=1; depth<=maxDepth; depth++){
+                negamax(b,depth,-MATE,MATE,0);
+                TTEntry t=tt.get(b.hash());
+                if(t!=null && t.best!=null) best=t.best;
             }
             return best;
         }
         int scoreMove(Board b, Move m, int depth){
             Board nb=b.makeMove(m);
-            return -negamax(nb, depth-1, -MATE, MATE, 1);
+            return -negamax(nb,depth-1,-MATE,MATE,1);
         }
-        List<ScoredMove> analyzeRoot(Board b, int depth){
+        List<ScoredMove> analyzeRoot(Board b,int depth){
             List<ScoredMove> out=new ArrayList<>();
+            for(int d=1; d<=depth; d++) negamax(b,d,-MATE,MATE,0);
             for(Move m: b.legalMoves()){
-                int s = scoreMove(b, m, depth);
+                Board nb=b.makeMove(m);
+                int s=-negamax(nb,depth-1,-MATE,MATE,1);
                 out.add(new ScoredMove(m,s));
             }
-            out.sort((x,y)-> Integer.compare(y.score, x.score));
+            out.sort((x,y)->Integer.compare(y.score,x.score));
             return out;
         }
-        // Quick-Analyse: nur Top-K Wurzelzüge scoren
-        int bestScoreApprox(Board b, int depth, int topK){
+        int bestScoreApprox(Board b,int depth,int topK){
             List<Move> moves=b.legalMoves();
             if(moves.isEmpty()) return 0;
-            moves.sort((a,c)-> Boolean.compare((c.isCapture||c.isPromotion()), (a.isCapture||a.isPromotion())));
-            int limit = Math.min(topK, moves.size());
-            int best = Integer.MIN_VALUE;
+            moves.sort((a,c)->score(b,c,null,0)-score(b,a,null,0));
+            int limit=Math.min(topK,moves.size());
+            int best=Integer.MIN_VALUE;
             for(int i=0;i<limit;i++){
                 Move m=moves.get(i);
-                int s = scoreMove(b, m, depth);
+                Board nb=b.makeMove(m);
+                int s=-negamax(nb,depth-1,-MATE,MATE,1);
                 if(s>best) best=s;
             }
             return best;
         }
+
         private int negamax(Board b,int depth,int alpha,int beta,int ply){
-            List<Move> moves=b.legalMoves();
-            if(depth==0) return (b.sideToMove==Side.WHITE?1:-1)*Eval.evaluate(b);
-            if(moves.isEmpty()){
-                if(b.isInCheck(b.sideToMove)) return -MATE + ply;
-                return 0;
+            long key=b.hash();
+            TTEntry entry=tt.get(key);
+            if(entry!=null && entry.depth>=depth){
+                if(entry.flag==TTEntry.Flag.EXACT) return entry.value;
+                if(entry.flag==TTEntry.Flag.LOWER) alpha=Math.max(alpha,entry.value);
+                else if(entry.flag==TTEntry.Flag.UPPER) beta=Math.min(beta,entry.value);
+                if(alpha>=beta) return entry.value;
             }
-            moves.sort((a,c)-> Boolean.compare((c.isCapture||c.isPromotion()), (a.isCapture||a.isPromotion())));
-            int best=Integer.MIN_VALUE/2;
+            if(depth==0) return quiesce(b,alpha,beta,ply);
+            List<Move> moves=b.legalMoves();
+            if(moves.isEmpty()) return b.isInCheck(b.sideToMove)? -MATE+ply : 0;
+            Move ttMove = entry!=null? entry.best:null;
+            moves.sort((m1,m2)->score(b,m2,ttMove,ply)-score(b,m1,ttMove,ply));
+            int bestVal=Integer.MIN_VALUE; Move bestMove=null;
+            int alphaOrig=alpha;
             for(Move m: moves){
                 Board nb=b.makeMove(m);
-                int val = -negamax(nb,depth-1,-beta,-alpha,ply+1);
-                if(val>best) best=val;
+                int val=-negamax(nb,depth-1,-beta,-alpha,ply+1);
+                if(val>bestVal){ bestVal=val; bestMove=m; }
                 if(val>alpha) alpha=val;
-                if(alpha>=beta) break;
+                if(alpha>=beta){
+                    if(!m.isCapture){
+                        int code=m.from*64+m.to;
+                        if(killer1[ply]!=code){ killer2[ply]=killer1[ply]; killer1[ply]=code; }
+                    }
+                    break;
+                }
             }
-            return best;
+            TTEntry.Flag flag;
+            if(bestVal<=alphaOrig) flag=TTEntry.Flag.UPPER;
+            else if(bestVal>=beta) flag=TTEntry.Flag.LOWER;
+            else flag=TTEntry.Flag.EXACT;
+            tt.put(key,new TTEntry(key,depth,bestVal,flag,bestMove));
+            if(bestMove!=null && !bestMove.isCapture){
+                history[b.sideToMove==Side.WHITE?0:1][bestMove.from*64+bestMove.to]+=depth*depth;
+            }
+            return bestVal;
         }
+
+        private int quiesce(Board b,int alpha,int beta,int ply){
+            int standPat=(b.sideToMove==Side.WHITE?1:-1)*Eval.evaluate(b);
+            if(standPat>=beta) return standPat;
+            if(alpha<standPat) alpha=standPat;
+            List<Move> moves=b.legalMoves();
+            moves.removeIf(m->!m.isCapture && !m.isPromotion());
+            moves.sort((m1,m2)->scoreCapture(b,m2)-scoreCapture(b,m1));
+            for(Move m: moves){
+                Board nb=b.makeMove(m);
+                int val=-quiesce(nb,-beta,-alpha,ply+1);
+                if(val>=beta) return val;
+                if(val>alpha) alpha=val;
+            }
+            return alpha;
+        }
+
+        private int scoreCapture(Board b,Move m){
+            Piece victim=b.at(m.to);
+            Piece attacker=b.at(m.from);
+            return 10*Eval.val(victim.type)-Eval.val(attacker.type);
+        }
+        private int score(Board b,Move m,Move ttMove,int ply){
+            if(m.equals(ttMove)) return 1_000_000;
+            if(m.isCapture) return 500_000 + scoreCapture(b,m);
+            int code=m.from*64+m.to;
+            if(code==killer1[ply]) return 400_000;
+            if(code==killer2[ply]) return 300_000;
+            return history[b.sideToMove==Side.WHITE?0:1][code];
+        }
+
         static final class ScoredMove { final Move move; final int score; ScoredMove(Move m,int s){ move=m; score=s; } }
+    }
+
+    static final class TTEntry {
+        enum Flag { EXACT, LOWER, UPPER }
+        final long key; final int depth; final int value; final Flag flag; final Move best;
+        TTEntry(long k,int d,int v,Flag f,Move b){ key=k; depth=d; value=v; flag=f; best=b; }
+    }
+    static final class TranspositionTable {
+        private final TTEntry[] table;
+        TranspositionTable(int size){ table=new TTEntry[size]; }
+        TTEntry get(long key){ TTEntry e=table[(int)(key & (table.length-1))]; return e!=null && e.key==key ? e : null; }
+        void put(long key, TTEntry e){ table[(int)(key & (table.length-1))]=e; }
     }
 
     // ---------- Sound ----------
@@ -588,21 +797,19 @@ public class ChessGUI {
     private EvalBar evalBar;
 
     // ELO-Stufen → Suchtiefe
-    private final int[] ELO_LEVELS = {800, 1100, 1400, 1700};
+    private final int[] ELO_LEVELS = IntStream.rangeClosed(1,20).map(i->i*100).toArray();
     private int depthFromIndex(int idx){
-        return switch(idx){
-            case 0 -> 2; // ~800
-            case 1 -> 3; // ~1100
-            case 2 -> 4; // ~1400
-            default -> 5; // ~1700
-        };
+        return 1 + idx/3;
     }
     private String labelFromIndex(int idx){
-        return switch(idx){
-            case 0 -> "leicht";
-            case 1 -> "normal";
-            case 2 -> "stark";
-            default -> "sehr stark";
+        int d=depthFromIndex(idx);
+        return switch(d){
+            case 1 -> "sehr leicht";
+            case 2 -> "leicht";
+            case 3 -> "normal";
+            case 4 -> "stark";
+            case 5 -> "sehr stark";
+            default -> "meister";
         };
     }
 
@@ -711,7 +918,7 @@ public class ChessGUI {
         diffLbl.setAlignmentX(Component.LEFT_ALIGNMENT);
         p.add(diffLbl);
 
-        depthSlider=new JSlider(0, ELO_LEVELS.length-1, 1); // default ~1100 → Tiefe 3
+        depthSlider=new JSlider(0, ELO_LEVELS.length-1, 10); // default ~1100
         depthSlider.setPaintTicks(true);
         depthSlider.setMajorTickSpacing(1);
         depthSlider.setSnapToTicks(true);
