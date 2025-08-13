@@ -1098,12 +1098,27 @@ public class ChessGUI {
         // --- Animation
         private boolean animating=false;
         private final int ANIM_MS=220;       // Dauer der Zuganimation
-        private Timer animTimer=null;
+        private Timer animTimer=null;    // <- bleibt, aber wir setzen ihn künftig nach stop() auf null
         private long animStart=0;
         private Board animBoard=null;        // Stellung vor dem Zug
         private Move animMove=null;
         private Piece animPiece=null;
         private Runnable animDone=null;
+
+        private void endDrag() {
+            if (dragTimer != null) {
+                dragTimer.stop();
+                dragTimer = null;
+            }
+            if (globalMouse != null) {
+                Toolkit.getDefaultToolkit().removeAWTEventListener(globalMouse);
+                globalMouse = null;
+            }
+            dragging = false;
+            dragPiece = null;
+            dragFrom = -1;
+            dragOffsetX = dragOffsetY = 0;
+        }
 
         BoardPanel(){
             setPreferredSize(new Dimension(MARGIN*2 + TILE*8 + 8, MARGIN*2 + TILE*8 + 8));
@@ -1131,13 +1146,18 @@ public class ChessGUI {
 
         // ------ Animation API
         void animateMove(Board pre, Move m, Runnable done){
+            // WICHTIG: kein Drag darf während der Animation aktiv sein
+            endDrag();
+
             animating=true; animStart=System.currentTimeMillis();
             animBoard=pre; animMove=m; animPiece=pre.at(m.from); animDone=done;
-            if(animTimer!=null) animTimer.stop();
+            if(animTimer!=null) { animTimer.stop(); animTimer=null; }
             animTimer=new Timer(1000/60, e -> {
                 long t = System.currentTimeMillis()-animStart;
                 if(t>=ANIM_MS){
-                    animTimer.stop(); animating=false;
+                    animTimer.stop();
+                    animTimer = null;     // NEU: sauber freigeben
+                    animating=false;
                     repaint();
                     if(animDone!=null) SwingUtilities.invokeLater(animDone);
                 } else {
@@ -1150,21 +1170,22 @@ public class ChessGUI {
         // ------ DnD-Handler
         private void onPress(MouseEvent e){
             if(e.getButton() != MouseEvent.BUTTON1) return;
-            if(busy || animating) return;
+
             requestFocusInWindow();
             int i = pointToSquare(e.getX(), e.getY());
             if(i==-1) return;
             Piece p = board.at(i);
             boolean allowed = (p!=null && p.side==board.sideToMove && p.side==human);
             if(!allowed){ beep(); return; }
+
             selected=i;
             legalFromSelected = board.legalMoves().stream().filter(m -> m.from==selected).collect(Collectors.toList());
+
             dragging=true; dragFrom=i; dragPiece=p; dragX=e.getX(); dragY=e.getY();
             Point tl = boardIndexToVisualXY(i);
             dragOffsetX = dragX - tl.x;
             dragOffsetY = dragY - tl.y;
-            if(dragTimer==null){ dragTimer=new Timer(1000/120, ev -> repaint()); }
-            dragTimer.start();
+
             repaint();
         }
         private void onDrag(MouseEvent e){
@@ -1175,15 +1196,7 @@ public class ChessGUI {
         }
         private void onRelease(MouseEvent e){
             if(!dragging) return;
-            // Finale Mausposition übernehmen – der letzte mouseDragged kann fehlen
-            dragX=e.getX(); dragY=e.getY();
-            // Zielkachel anhand der letzten bekannten Drag-Position ermitteln
-            int dest = pointToSquare(dragX, dragY);
-            List<Move> candidates = legalFromSelected.stream().filter(m -> m.to==dest).collect(Collectors.toList());
-            if(candidates.isEmpty()){
-                // Kein legaler Drop: zurückfallen lassen
-                dragging=false; dragPiece=null; dragOffsetX=dragOffsetY=0;
-                if(dragTimer!=null) dragTimer.stop();
+
                 selected=-1; legalFromSelected=List.of();
                 repaint();
                 return;
@@ -1199,10 +1212,9 @@ public class ChessGUI {
                 chosen=m;
             }
 
-            // Animation/Move zuerst starten, danach Drag-States leeren
+            // Animation + Move starten
             playMove(chosen, () -> status.setText("Du bist dran ("+human+")."));
-            dragging=false; dragPiece=null; dragOffsetX=dragOffsetY=0;
-            if(dragTimer!=null) dragTimer.stop();
+
             selected=-1; legalFromSelected=List.of();
             repaint();
         }
