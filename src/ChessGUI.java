@@ -43,10 +43,6 @@ public class ChessGUI {
     private static final Color CAP   = new Color(220, 90, 90,180);   // Capture-Ring
     private static final Color MOVE  = new Color( 30,144,255,180);   // Punkt für stillen Zug
 
-    // Hint-Overlay + Pfeil
-    private static final Color HINT_FROM_OVER = new Color( 60,180, 75,120);
-    private static final Color HINT_TO_OVER   = new Color( 60,180, 75, 90);
-    private static final Color HINT_ARROW     = new Color( 60,180, 75,200);
 
     // ---------- Engine-Basics ----------
     enum Side { WHITE, BLACK;
@@ -1234,7 +1230,6 @@ public class ChessGUI {
         // Hint-Overlays (kontrastreich)
         final Color HINT_FROM_OVER = new Color(255, 196, 0, 160);   // amber
         final Color HINT_TO_OVER   = new Color(64, 200, 255, 170);  // cyan
-        final Color HINT_ARROW     = new Color(255, 255, 255, 230); // weißer Pfeil
 
         // --- Drag & Drop
         private boolean dragging=false;
@@ -1619,7 +1614,7 @@ public class ChessGUI {
                 g2.drawString(String.valueOf(rankChar), MARGIN+4 - 18, MARGIN+4 + r*TILE + 14);
             }
 
-            // Hint – kontrastreich: Overlays + Pfeil
+            // Hint – kontrastreich: Overlays
             if(hintMove!=null && !animating){
                 Point af=boardIndexToVisualXY(hintMove.from);
                 Point bf=boardIndexToVisualXY(hintMove.to);
@@ -1627,35 +1622,9 @@ public class ChessGUI {
                 // Overlays
                 g2.setColor(HINT_FROM_OVER); g2.fillRect(af.x, af.y, TILE, TILE);
                 g2.setColor(HINT_TO_OVER);   g2.fillRect(bf.x, bf.y, TILE, TILE);
-
-                // Pfeil
-                int ax = af.x + TILE/2, ay = af.y + TILE/2;
-                int ex = bf.x + TILE/2, ey = bf.y + TILE/2; // andere Namen, kein Konflikt
-                Stroke old = g2.getStroke();
-                g2.setStroke(new BasicStroke(6f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-                g2.setColor(HINT_ARROW);
-                drawArrow(g2, ax, ay, ex, ey);
-                g2.setStroke(old);
             }
 
             g2.dispose();
-        }
-
-        private void drawArrow(Graphics2D g2, int x1, int y1, int x2, int y2){
-            double ang = Math.atan2(y2 - y1, x2 - x1);
-            int headLen = Math.max(12, TILE/4);
-            int headWidth = Math.max(10, TILE/6);
-
-            // Spitze etwas vor das Zielfeldzentrum
-            int bx = x2 - (int)(Math.cos(ang) * (TILE/3.5));
-            int by = y2 - (int)(Math.sin(ang) * (TILE/3.5));
-
-            g2.drawLine(x1, y1, bx, by);
-            int lx = bx - (int)(Math.cos(ang) * headLen) + (int)(Math.cos(ang + Math.PI/2) * headWidth);
-            int ly = by - (int)(Math.sin(ang) * headLen) + (int)(Math.sin(ang + Math.PI/2) * headWidth);
-            int rx = bx - (int)(Math.cos(ang) * headLen) + (int)(Math.cos(ang - Math.PI/2) * headWidth);
-            int ry = by - (int)(Math.sin(ang) * headLen) + (int)(Math.sin(ang - Math.PI/2) * headWidth);
-            g2.fillPolygon(new int[]{bx,lx,rx}, new int[]{by,ly,ry}, 3);
         }
 
         private void drawGlyph(Graphics2D g2, FontMetrics fm, Piece p, int x, int y){
