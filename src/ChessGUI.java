@@ -1094,7 +1094,21 @@ public class ChessGUI {
         private int dragX=0, dragY=0; // Mausposition
         private int dragOffsetX=0, dragOffsetY=0; // Offset zwischen Klickpunkt und Feld
         private Timer dragTimer=null;           // regelmäßiges Repaint für flüssiges Ziehen
-        private AWTEventListener globalMouse=null; // globaler Listener zum Abbrechen des Drags
+        // --- Drag capture via glass pane + window watcher
+        private JComponent glass = null;
+        private final MouseAdapter glassForwarder = new MouseAdapter() {
+            private void forward(MouseEvent e){
+                if (!dragging) return;
+                // Forward to the board's coordinate space
+                MouseEvent conv = SwingUtilities.convertMouseEvent((Component)e.getSource(), e, BoardPanel.this);
+                if (e.getID() == MouseEvent.MOUSE_RELEASED) onRelease(conv);
+                else onDrag(conv);
+            }
+            @Override public void mouseDragged(MouseEvent e){ forward(e); }
+            @Override public void mouseMoved(MouseEvent e){ forward(e); }
+            @Override public void mouseReleased(MouseEvent e){ forward(e); }
+        };
+        private WindowAdapter windowWatcher = null;
 
         // --- Animation
         private boolean animating=false;
@@ -1109,16 +1123,32 @@ public class ChessGUI {
         private void endDrag() {
             if (dragTimer != null) {
                 dragTimer.stop();
-                dragTimer = null;
+                dragTimer = null;             // <-- ensure GC + no repeats
             }
-            if (globalMouse != null) {
-                Toolkit.getDefaultToolkit().removeAWTEventListener(globalMouse);
-                globalMouse = null;
-            }
+            uninstallGlass();                  // <-- NEW: always remove glass capture
+
             dragging = false;
             dragPiece = null;
             dragFrom = -1;
             dragOffsetX = dragOffsetY = 0;
+        }
+
+        private void installGlass(){
+            if (glass != null) return;
+            glass = (JComponent) frame.getGlassPane();
+            glass.setVisible(true);
+            glass.setOpaque(false);
+            glass.setCursor(Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR));
+            glass.addMouseListener(glassForwarder);
+            glass.addMouseMotionListener(glassForwarder);
+        }
+        private void uninstallGlass(){
+            if (glass == null) return;
+            glass.removeMouseListener(glassForwarder);
+            glass.removeMouseMotionListener(glassForwarder);
+            glass.setCursor(Cursor.getDefaultCursor());
+            glass.setVisible(false);
+            glass = null;
         }
 
         BoardPanel(){
@@ -1138,6 +1168,20 @@ public class ChessGUI {
             addMouseListener(ma);
             addMouseMotionListener(ma);
 
+            // ESC cancels any stuck drag
+            getInputMap(WHEN_IN_FOCUSED_WINDOW).put(KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), "cancelDrag");
+            getActionMap().put("cancelDrag", new AbstractAction(){
+                @Override public void actionPerformed(ActionEvent e){ endDrag(); repaint(); }
+            });
+
+            // Cancel drag if the window deactivates / loses focus
+            windowWatcher = new WindowAdapter() {
+                @Override public void windowDeactivated(WindowEvent e){ endDrag(); }
+                @Override public void windowLostFocus(WindowEvent e){ endDrag(); }
+            };
+            frame.addWindowFocusListener(windowWatcher);
+            frame.addWindowListener(windowWatcher);
+
             // Shortcuts: H=Hint, U=Undo
             getInputMap(WHEN_IN_FOCUSED_WINDOW).put(KeyStroke.getKeyStroke('H'), "hint");
             getActionMap().put("hint", new AbstractAction(){ @Override public void actionPerformed(ActionEvent e){ onHint(); }});
@@ -1147,8 +1191,11 @@ public class ChessGUI {
 
         // ------ Animation API
         void animateMove(Board pre, Move m, Runnable done){
-            // WICHTIG: kein Drag darf während der Animation aktiv sein
+            // No drag allowed during animation
             endDrag();
+            selected = -1;                     // <-- NEW: clear UI overlays that could compete
+            legalFromSelected = List.of();
+            hintMove = null;
 
             animating=true; animStart=System.currentTimeMillis();
             animBoard=pre; animMove=m; animPiece=pre.at(m.from); animDone=done;
@@ -1172,6 +1219,9 @@ public class ChessGUI {
         private void onPress(MouseEvent e){
             if(e.getButton() != MouseEvent.BUTTON1) return;
 
+            // NEW: don’t start a drag while the AI/animation is running
+            if (busy || animating) { beep(); return; }
+
             requestFocusInWindow();
             int i = pointToSquare(e.getX(), e.getY());
             if(i==-1) return;
@@ -1191,27 +1241,20 @@ public class ChessGUI {
             dragTimer = new Timer(1000/60, ev -> repaint());
             dragTimer.start();
 
-            // Globale Maus-Events beobachten, damit Drag außerhalb des Panels weiterläuft
-            globalMouse = ev -> {
-                if(!(ev instanceof MouseEvent me) || !dragging) return;
-                // Ereignisse vom Brett selbst ignorieren – die lokalen Listener kümmern sich darum
-                if(me.getComponent()==BoardPanel.this) return;
-                if(me.getID()==MouseEvent.MOUSE_DRAGGED){
-                    MouseEvent conv = SwingUtilities.convertMouseEvent(me.getComponent(), me, BoardPanel.this);
-                    dragX = conv.getX();
-                    dragY = conv.getY();
-                } else if(me.getID()==MouseEvent.MOUSE_RELEASED){
-                    MouseEvent conv = SwingUtilities.convertMouseEvent(me.getComponent(), me, BoardPanel.this);
-                    onRelease(conv);
-                }
-            };
-            Toolkit.getDefaultToolkit().addAWTEventListener(globalMouse,
-                    AWTEvent.MOUSE_EVENT_MASK | AWTEvent.MOUSE_MOTION_EVENT_MASK);
+            // NEW: capture all mouse events within the frame while dragging
+            installGlass();
 
+            // (Optional) If you keep the Toolkit listener, you can remove it now;
+            // glass pane makes it unnecessary.
             repaint();
         }
         private void onDrag(MouseEvent e){
             if(!dragging || busy || animating) return;
+            // If somehow we get a drag with the button no longer down, treat as release
+            if ((e.getModifiersEx() & InputEvent.BUTTON1_DOWN_MASK) == 0) {
+                onRelease(e);
+                return;
+            }
             // Mausposition merken und Brett neu zeichnen
             dragX=e.getX(); dragY=e.getY();
             repaint();
