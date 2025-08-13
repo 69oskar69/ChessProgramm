@@ -774,7 +774,7 @@ public class ChessGUI {
     private void newGame(Side side){
         if(busy) return;
         human=side;
-        flip=(human==Side.BLACK); // deine Farbe unten
+        flip=(human==Side.WHITE); // deine Farbe unten
         board=Board.initial();
         history.clear(); plies.clear();
         capturedByWhite.clear(); capturedByBlack.clear();
@@ -802,7 +802,11 @@ public class ChessGUI {
                     try{
                         Move m=get();
                         if(m==null){ onGameOverWithAnalysis(); busy=false; return; }
-                        playMove(m, () -> status.setText(board.legalMoves().isEmpty() ? "Spielende." : "Du bist dran ("+human+")."));
+                        playMove(m,
+                                () -> status.setText(board.legalMoves().isEmpty()
+                                        ? "Spielende."
+                                        : "Du bist dran (" + human + ")."),
+                                true);
                     }catch(Exception ex){ status.setText("Fehler in der KI."); busy=false; }
                 }
             }.execute();
@@ -820,29 +824,44 @@ public class ChessGUI {
     }
 
     // --- animiertes Ausführen (für Mensch & KI)
-    private void playMove(Move m, Runnable after){
+    private void playMove(Move m, Runnable after, boolean animate){
         busy = true;
+
         Piece moved = board.at(m.from);
         if(moved!=null && moved.type==PieceType.PAWN) SoundFX.pawn();
         if(m.isCapture) SoundFX.capture();
 
-        Board pre = board.copy();
-        boardPanel.animateMove(pre, m, () -> {
+        if(animate){
+            Board pre = board.copy();
+            boardPanel.animateMove(pre, m, () -> {
+                commitMoveAndRecord(m);
+                if(board.isInCheck(board.sideToMove)) SoundFX.check();
+                boardPanel.repaint();
+                updateEvalBar();
+                busy = false;
+
+                if(board.legalMoves().isEmpty()){
+                    onGameOverWithAnalysis();
+                    return;
+                }
+                if(after!=null) after.run();
+                if(board.sideToMove!=human) maybeAIThink();
+            });
+        } else {
+            // Teleport immediately (no animation)
             commitMoveAndRecord(m);
             if(board.isInCheck(board.sideToMove)) SoundFX.check();
             boardPanel.repaint();
             updateEvalBar();
             busy = false;
 
-            // >>> Spielende hier sicher behandeln
             if(board.legalMoves().isEmpty()){
                 onGameOverWithAnalysis();
                 return;
             }
-
             if(after!=null) after.run();
             if(board.sideToMove!=human) maybeAIThink();
-        });
+        }
     }
 
     private void commitMoveAndRecord(Move m){
@@ -876,7 +895,7 @@ public class ChessGUI {
 
     private void updateEvalBar(){
         int cp = (int)Math.max(-2000, Math.min(2000, (double)Eval.evaluate(board)));
-        evalBar.setEvalCp(cp, human == Side.WHITE); // true = unten ist Weiß
+        evalBar.setEvalCp(cp, flip);
     }
 
     private void updateScoreBoard(){
@@ -1388,7 +1407,7 @@ public class ChessGUI {
             }
 
             // Animation + Move starten
-            playMove(chosen, () -> status.setText("Du bist dran ("+human+")."));
+            ChessGUI.this.playMove(chosen, () -> status.setText("Du bist dran ("+human+")."), false);
 
             selected=-1; legalFromSelected=List.of();
             repaint();
