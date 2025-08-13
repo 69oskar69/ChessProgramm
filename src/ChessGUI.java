@@ -1354,8 +1354,7 @@ public class ChessGUI {
             dragOffsetX = dragX - tl.x;
             dragOffsetY = dragY - tl.y;
 
-            // regelmäßiges Repaint, falls keine Drag-Events eintreffen
-            dragTimer = new Timer(1000/60, ev -> repaint());
+
             dragTimer.start();
 
             // NEW: capture all mouse events within the frame while dragging
