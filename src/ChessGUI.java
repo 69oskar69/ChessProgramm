@@ -787,9 +787,55 @@ public class ChessGUI {
         maybeAIThink();
     }
 
-    private void onUndo(){ ChessGUI.this.onUndo(); }
+    private void onUndo(){
+        if(busy || history.isEmpty()) return;
 
-    private void onHint(){ ChessGUI.this.onHint();}
+        hintMove = null;
+        selected = -1;
+        legalFromSelected = List.of();
+
+        // revert last move (AI or human)
+        board = history.pop();
+        if(!plies.isEmpty()) plies.remove(plies.size()-1);
+
+        // if still not player's turn, undo one more (undo pair)
+        if(board.sideToMove != human && !history.isEmpty()){
+            board = history.pop();
+            if(!plies.isEmpty()) plies.remove(plies.size()-1);
+        }
+
+        lastMove = plies.isEmpty() ? null : plies.get(plies.size()-1).move;
+        recalcCaptures();
+        updateScoreBoard();
+        boardPanel.repaint();
+        updateEvalBar();
+        status.setText("Zug zurückgenommen. " + board.sideToMove + " am Zug.");
+    }
+
+    private void onHint(){
+        if(busy) return;
+        if(board.legalMoves().isEmpty()) return;
+
+        status.setText("Hint wird berechnet…");
+        busy = true;
+        new SwingWorker<Move,Void>(){
+            @Override protected Move doInBackground(){ return ai.findBestMove(board); }
+            @Override protected void done(){
+                try{
+                    hintMove = get();
+                    if(hintMove != null)
+                        status.setText("Hint: " + pretty(hintMove));
+                    else
+                        status.setText("Kein Zug verfügbar.");
+                }catch(Exception ex){
+                    hintMove = null;
+                    status.setText("Hint fehlgeschlagen.");
+                }
+                boardPanel.repaint();
+                busy = false;
+            }
+        }.execute();
+    }
 
     private void maybeAIThink(){
         if(busy) return;
