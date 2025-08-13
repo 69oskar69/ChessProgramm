@@ -1119,6 +1119,8 @@ public class ChessGUI {
         private Move animMove=null;
         private Piece animPiece=null;
         private Runnable animDone=null;
+        private int animOffsetX = 0;
+        private int animOffsetY = 0;
 
         private void endDrag() {
             if (dragTimer != null) {
@@ -1191,23 +1193,34 @@ public class ChessGUI {
 
         // ------ Animation API
         void animateMove(Board pre, Move m, Runnable done){
-            // No drag allowed during animation
             endDrag();
-            selected = -1;                     // <-- NEW: clear UI overlays that could compete
+            selected = -1;
             legalFromSelected = List.of();
             hintMove = null;
 
-            animating=true; animStart=System.currentTimeMillis();
-            animBoard=pre; animMove=m; animPiece=pre.at(m.from); animDone=done;
-            if(animTimer!=null) { animTimer.stop(); animTimer=null; }
-            animTimer=new Timer(1000/60, e -> {
-                long t = System.currentTimeMillis()-animStart;
-                if(t>=ANIM_MS){
+            animating = true;
+            animStart = System.currentTimeMillis();
+            animBoard = pre;
+            animMove = m;
+            animPiece = pre.at(m.from);
+            animDone = done;
+
+            // Pre-calc offsets so there’s no first-frame jump
+            FontMetrics fm = getFontMetrics(getBestPieceFont((int)(TILE * 0.82)));
+            String glyph = String.valueOf(animPiece.symbolUnicode());
+            int glyphW = fm.stringWidth(glyph);
+            animOffsetX = (TILE - glyphW) / 2;
+            animOffsetY = (TILE + fm.getAscent() - fm.getDescent()) / 2 - fm.getAscent();
+
+            if(animTimer != null) { animTimer.stop(); animTimer = null; }
+            animTimer = new Timer(1000/60, e -> {
+                long t = System.currentTimeMillis() - animStart;
+                if(t >= ANIM_MS){
                     animTimer.stop();
-                    animTimer = null;     // NEU: sauber freigeben
-                    animating=false;
+                    animTimer = null;
+                    animating = false;
                     repaint();
-                    if(animDone!=null) SwingUtilities.invokeLater(animDone);
+                    if(animDone != null) SwingUtilities.invokeLater(animDone);
                 } else {
                     repaint();
                 }
@@ -1377,31 +1390,33 @@ public class ChessGUI {
             g2.setFont(pieceFont);
             FontMetrics fm=g2.getFontMetrics();
 
-            if(animating && animBoard!=null && animMove!=null){
-                // Schlagfigur ausblenden (inkl. En passant)
+            if(animating && animBoard != null && animMove != null){
                 int hideCap = -1;
                 if(animMove.enPassant){
-                    hideCap = (animPiece.side==Side.WHITE) ? (animMove.to-8) : (animMove.to+8);
+                    hideCap = (animPiece.side == Side.WHITE) ? (animMove.to - 8) : (animMove.to + 8);
                 } else if (animBoard.at(animMove.to) != null) {
                     hideCap = animMove.to;
                 }
-                // Basisstellung vor dem Zug (ohne ziehende / geschlagene Figur)
-                for(int r=0;r<8;r++){
-                    for(int f=0;f<8;f++){
-                        int bi=visualToBoardIndex(f,r);
-                        if(bi==animMove.from || bi==hideCap) continue;
-                        Piece p=animBoard.at(bi); if(p==null) continue;
-                        drawGlyph(g2,fm,p, MARGIN+4+f*TILE, MARGIN+4+r*TILE);
+
+                for(int r = 0; r < 8; r++){
+                    for(int f = 0; f < 8; f++){
+                        int bi = visualToBoardIndex(f, r);
+                        if(bi == animMove.from || bi == hideCap) continue;
+                        Piece p = animBoard.at(bi);
+                        if(p == null) continue;
+                        drawGlyph(g2, fm, p, MARGIN + 4 + f * TILE, MARGIN + 4 + r * TILE);
                     }
                 }
-                // bewegte Figur interpoliert zeichnen
-                Point a=boardIndexToVisualXY(animMove.from);
-                Point b=boardIndexToVisualXY(animMove.to);
-                double t = Math.min(1.0, (System.currentTimeMillis()-animStart)/(double)ANIM_MS);
-                double s = 0.5 - 0.5*Math.cos(Math.PI * t); // ease-in-out
-                int x = (int)Math.round(a.x + (b.x - a.x)*s);
-                int y = (int)Math.round(a.y + (b.y - a.y)*s);
-                drawGlyph(g2,fm,animPiece, x, y);
+
+                Point a = boardIndexToVisualXY(animMove.from);
+                Point b = boardIndexToVisualXY(animMove.to);
+                double t = Math.min(1.0, (System.currentTimeMillis() - animStart) / (double) ANIM_MS);
+                double s = 0.5 - 0.5 * Math.cos(Math.PI * t);
+
+                int x = (int) Math.round(a.x + (b.x - a.x) * s) + animOffsetX;
+                int y = (int) Math.round(a.y + (b.y - a.y) * s) + animOffsetY;
+
+                drawGlyph(g2, fm, animPiece, x, y);
             } else {
                 // Normal + Drag: zeichne Brett (ggf. ohne Drag-Quelle)
                 for(int r=0;r<8;r++){
