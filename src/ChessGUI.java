@@ -32,6 +32,7 @@ public class ChessGUI {
     private static final int TILE = 72;          // Kachelgröße in px
     private static final int MARGIN = 16;        // äußerer Rand ums Brett
     private static final int ANIM_MS = 180;      // Animationsdauer in ms
+    private static final int AI_DELAY_MS = 300;  // Verzögerung vor KI-Zug in ms
 
     // Farben (kannst du nach Geschmack anpassen)
     private static final Color LIGHT = new Color(238,238,210);
@@ -802,11 +803,14 @@ public class ChessGUI {
                     try{
                         Move m=get();
                         if(m==null){ onGameOverWithAnalysis(); busy=false; return; }
-                        playMove(m,
-                                () -> status.setText(board.legalMoves().isEmpty()
-                                        ? "Spielende."
-                                        : "Du bist dran (" + human + ")."),
-                                false); // <— teleport AI move too
+                        Timer delay = new Timer(AI_DELAY_MS, e ->
+                                playMove(m,
+                                        () -> status.setText(board.legalMoves().isEmpty()
+                                                ? "Spielende."
+                                                : "Du bist dran (" + human + ")."),
+                                        false)); // <— teleport AI move too
+                        delay.setRepeats(false);
+                        delay.start();
                     }catch(Exception ex){ status.setText("Fehler in der KI."); busy=false; }
                 }
             }.execute();
