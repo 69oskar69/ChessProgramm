@@ -1094,6 +1094,7 @@ public class ChessGUI {
         private int dragX=0, dragY=0; // Mausposition
         private int dragOffsetX=0, dragOffsetY=0; // Offset zwischen Klickpunkt und Feld
         private Timer dragTimer=null;           // regelmäßiges Repaint für flüssiges Ziehen
+        private AWTEventListener globalMouse=null; // globaler Listener zum Abbrechen des Drags
 
         // --- Animation
         private boolean animating=false;
@@ -1196,7 +1197,19 @@ public class ChessGUI {
         }
         private void onRelease(MouseEvent e){
             if(!dragging) return;
+            endDrag();
 
+            int to = pointToSquare(e.getX(), e.getY());
+            if(to==-1){
+                selected=-1; legalFromSelected=List.of();
+                repaint();
+                return;
+            }
+
+            List<Move> candidates = legalFromSelected.stream()
+                    .filter(m -> m.to==to)
+                    .collect(Collectors.toList());
+            if(candidates.isEmpty()){
                 selected=-1; legalFromSelected=List.of();
                 repaint();
                 return;
