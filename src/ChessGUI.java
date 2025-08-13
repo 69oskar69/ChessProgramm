@@ -1094,8 +1094,6 @@ public class ChessGUI {
         private int dragX=0, dragY=0; // Mausposition
         private int dragOffsetX=0, dragOffsetY=0; // Offset zwischen Klickpunkt und Feld
         private Timer dragTimer=null;           // regelmäßiges Repaint für flüssiges Ziehen
-        // Globaler Listener zum Tracken von Mausereignissen außerhalb des Panels
-        private AWTEventListener globalMouse = null;
 
         // --- Animation
         private boolean animating=false;
@@ -1172,7 +1170,7 @@ public class ChessGUI {
         // ------ DnD-Handler
         private void onPress(MouseEvent e){
             if(e.getButton() != MouseEvent.BUTTON1) return;
-            if(busy || animating) return;                 // block während KI/Animation
+
             requestFocusInWindow();
             int i = pointToSquare(e.getX(), e.getY());
             if(i==-1) return;
@@ -1188,50 +1186,6 @@ public class ChessGUI {
             dragOffsetX = dragX - tl.x;
             dragOffsetY = dragY - tl.y;
 
-            // Timer: Mauspolling + Repaint
-            if (dragTimer != null) { dragTimer.stop(); dragTimer=null; }
-            dragTimer=new Timer(1000/120, ev -> {
-                if (!dragging || busy || animating) return;  // während KI/Anim ignorieren
-                PointerInfo pi = MouseInfo.getPointerInfo();
-                if (pi != null) {
-                    Point pnt = pi.getLocation();
-                    SwingUtilities.convertPointFromScreen(pnt, BoardPanel.this);
-                    dragX = pnt.x; dragY = pnt.y;
-                }
-                repaint();
-            });
-            dragTimer.start();
-
-            // Globaler Listener: nur aktiv, solange kein KI/Anim
-            if (globalMouse != null) {
-                Toolkit.getDefaultToolkit().removeAWTEventListener(globalMouse);
-                globalMouse = null;
-            }
-            globalMouse = event -> {
-                if (!(event instanceof MouseEvent me)) return;
-                if (!dragging || busy || animating) return;  // scharf bewacht
-
-                switch (me.getID()) {
-                    case MouseEvent.MOUSE_DRAGGED -> {
-                        Point pScr = me.getLocationOnScreen();
-                        SwingUtilities.convertPointFromScreen(pScr, BoardPanel.this);
-                        dragX = pScr.x; dragY = pScr.y;
-                        repaint();
-                    }
-                    case MouseEvent.MOUSE_RELEASED -> {
-                        Point pScr = me.getLocationOnScreen();
-                        SwingUtilities.convertPointFromScreen(pScr, BoardPanel.this);
-                        MouseEvent fake = new MouseEvent(
-                                BoardPanel.this, MouseEvent.MOUSE_RELEASED, me.getWhen(), me.getModifiersEx(),
-                                pScr.x, pScr.y, me.getClickCount(), me.isPopupTrigger(), me.getButton()
-                        );
-                        onRelease(fake); // delegiere an bestehende Logik
-                    }
-                }
-            };
-            Toolkit.getDefaultToolkit().addAWTEventListener(globalMouse,
-                    AWTEvent.MOUSE_EVENT_MASK | AWTEvent.MOUSE_MOTION_EVENT_MASK);
-
             repaint();
         }
         private void onDrag(MouseEvent e){
@@ -1243,20 +1197,6 @@ public class ChessGUI {
         private void onRelease(MouseEvent e){
             if(!dragging) return;
 
-            // Immer aufräumen, egal wie’s weitergeht
-            if (globalMouse != null) {
-                Toolkit.getDefaultToolkit().removeAWTEventListener(globalMouse);
-                globalMouse = null;
-            }
-            if (dragTimer != null) { dragTimer.stop(); dragTimer=null; }
-
-            // finale Mausposition übernehmen – letzter mouseDragged kann fehlen
-            dragX=e.getX(); dragY=e.getY();
-            int dest = pointToSquare(dragX, dragY);
-
-            List<Move> candidates = legalFromSelected.stream().filter(m -> m.to==dest).collect(Collectors.toList());
-            if(candidates.isEmpty()){
-                endDrag();
                 selected=-1; legalFromSelected=List.of();
                 repaint();
                 return;
@@ -1275,8 +1215,6 @@ public class ChessGUI {
             // Animation + Move starten
             playMove(chosen, () -> status.setText("Du bist dran ("+human+")."));
 
-            // Aufräumen nach Start
-            endDrag();
             selected=-1; legalFromSelected=List.of();
             repaint();
         }
