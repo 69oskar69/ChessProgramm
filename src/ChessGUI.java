@@ -1,10 +1,12 @@
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
+import javax.swing.border.LineBorder;
 import javax.sound.sampled.*;
 import javax.swing.table.AbstractTableModel;
 import java.awt.*;
 import java.awt.event.*;
 import javax.swing.Timer;
+import java.awt.image.BufferedImage;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -17,6 +19,7 @@ import java.util.Objects;
 import java.util.Random;
 import java.util.Hashtable;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import java.util.Comparator;
 import javax.swing.event.MouseInputAdapter;
 
@@ -655,7 +658,7 @@ public class ChessGUI {
         JMenu game=new JMenu("Spiel");
         JMenuItem newW=new JMenuItem("Als Weiß spielen");
         JMenuItem newB=new JMenuItem("Als Schwarz spielen");
-        JMenuItem undo=new JMenuItem("Undo");
+        JMenuItem undo=new JMenuItem("Undo", createUndoIcon());
         JMenuItem analyzeInfo=new JMenuItem("Analyse‑Info");
         JMenuItem quit=new JMenuItem("Beenden");
         newW.addActionListener(e -> newGame(Side.WHITE));
@@ -740,12 +743,20 @@ public class ChessGUI {
         p.add(sfxPawn); p.add(sfxExtra);
         p.add(Box.createVerticalStrut(12));
 
-        JPanel btns=new JPanel(new GridLayout(2,1,8,8));
-        JButton undoBtn=new JButton("Undo");
-        JButton hintBtn=new JButton("Hint");
+        JPanel btns=new JPanel(new FlowLayout(FlowLayout.LEFT,8,0));
+        JButton undoBtn=new JButton("Undo", createUndoIcon());
+        JButton hintBtn=new JButton("Hint", createHintIcon());
+        Stream.of(undoBtn, hintBtn).forEach(b -> {
+            b.setFocusPainted(false);
+            b.setBorder(new LineBorder(new Color(200,200,200)));
+            b.setBackground(new Color(245,245,245));
+        });
+        undoBtn.setToolTipText("Letzten Zug rückgängig machen (U)");
+        hintBtn.setToolTipText("Vorschlag für nächsten Zug (H)");
         undoBtn.addActionListener(e -> onUndo());
         hintBtn.addActionListener(e -> onHint());
         btns.add(undoBtn); btns.add(hintBtn);
+        btns.setOpaque(false);
         btns.setAlignmentX(Component.LEFT_ALIGNMENT);
         p.add(btns);
 
@@ -760,6 +771,36 @@ public class ChessGUI {
 
         rightPanel = root;
         return root;
+    }
+
+    private static Icon createUndoIcon(){
+        int s=16;
+        BufferedImage img=new BufferedImage(s,s,BufferedImage.TYPE_INT_ARGB);
+        Graphics2D g=img.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        g.setColor(new Color(60,60,60));
+        g.setStroke(new BasicStroke(2f));
+        g.drawArc(2,2,12,12,90,270);
+        g.drawLine(2,8,8,2);
+        g.drawLine(2,8,8,14);
+        g.dispose();
+        return new ImageIcon(img);
+    }
+
+    private static Icon createHintIcon(){
+        int s=16;
+        BufferedImage img=new BufferedImage(s,s,BufferedImage.TYPE_INT_ARGB);
+        Graphics2D g=img.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        g.setColor(new Color(255,200,0));
+        g.fillOval(3,1,10,10);
+        g.setColor(new Color(200,200,200));
+        g.fillRect(6,11,4,4);
+        g.setColor(new Color(120,120,120));
+        g.drawOval(3,1,10,10);
+        g.drawLine(6,15,10,15);
+        g.dispose();
+        return new ImageIcon(img);
     }
 
     private void updateDepthLabel(){
