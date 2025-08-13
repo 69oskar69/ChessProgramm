@@ -1038,11 +1038,10 @@ public class ChessGUI {
             return;
         }
 
-        // Quick-Analyse Parameter (auf ~10–30s gezielt)
-        final int MAX_PLIES = 80;                 // analysiere nur die letzten 80 Halbzüge
-        final long TIME_BUDGET_MS = 20_000L;      // ~20 Sekunden Budget
-        final int TOP_K = 8;                      // Top-K Wurzelzüge
-        final int ANALYSIS_DEPTH = Math.min(3, ai.getDepth()); // Tiefe 2–3 reicht meist
+        // Analyse-Parameter – deutlich gründlicher als die alte Quick-Analyse
+        final int MAX_PLIES = 120;                // analysiere maximal die letzten 120 Halbzüge
+        final long TIME_BUDGET_MS = 25_000L;      // grobes Gesamtbudget (~25s)
+        final int ANALYSIS_DEPTH = Math.min(ai.getDepth() + 4, 8); // deutlich tiefere Suche
 
         final int totalPlies = plies.size();
         final int startIndex = Math.max(0, totalPlies - MAX_PLIES);
@@ -1068,21 +1067,28 @@ public class ChessGUI {
                     PlyRecord pr = plies.get(i);
                     Side mover = pr.before.sideToMove;
 
-                    int bestScore   = ai.bestScoreApprox(pr.before, ANALYSIS_DEPTH, TOP_K);
-                    int chosenScore = ai.scoreMove(pr.before, pr.move, ANALYSIS_DEPTH);
+                    // Wertungen aller Wurzelzüge – liefert auch den besten Zug
+                    List<AI.ScoredMove> root = ai.analyzeRoot(pr.before, ANALYSIS_DEPTH);
+                    if(root.isEmpty()) break;
+
+                    AI.ScoredMove best = root.get(0);
+                    AI.ScoredMove chosen = root.stream()
+                            .filter(sm -> sm.move.from==pr.move.from && sm.move.to==pr.move.to && sm.move.promotion==pr.move.promotion)
+                            .findFirst()
+                            .orElse(null);
+
+                    int chosenScore = (chosen!=null) ? chosen.score : ai.scoreMove(pr.before, pr.move, ANALYSIS_DEPTH);
+                    int bestScore   = best.score;
 
                     int loss = Math.max(0, toCp(bestScore) - toCp(chosenScore));
                     int evalAfterW = (mover==Side.WHITE) ? toCp(chosenScore) : -toCp(chosenScore);
-                    String label = classify(loss, bestScore, chosenScore);
+                    String label = classify(loss);
 
                     if(mover==Side.WHITE){ sumLossW+=loss; countW++; } else { sumLossB+=loss; countB++; }
 
                     int moveNo = pr.before.fullmoveNumber;
                     String moveStr = pretty(pr.move);
-
-                    List<AI.ScoredMove> root = ai.analyzeRoot(pr.before, 1); // nur 1 Ply fürs Label – billig
-                    root.sort((x,y)-> Integer.compare(y.score, x.score));
-                    String bestStr = root.isEmpty()? moveStr : pretty(root.get(0).move);
+                    String bestStr = pretty(best.move);
 
                     rows.add(new MoveAnalysis(i, moveNo, mover, moveStr, bestStr, loss, evalAfterW, label));
                     processed++;
@@ -1097,8 +1103,8 @@ public class ChessGUI {
                 int acplW = countW==0?0: (int)Math.round((double)sumLossW/countW);
                 int acplB = countB==0?0: (int)Math.round((double)sumLossB/countB);
 
-                double accW = Math.max(0, 100.0 - acplW/12.0);
-                double accB = Math.max(0, 100.0 - acplB/12.0);
+                double accW = accuracyFromAcpl(acplW);
+                double accB = accuracyFromAcpl(acplB);
 
                 return new AnalysisResult(rows, round1(accW), round1(accB), acplW, acplB, truncated, processed, toAnalyze);
             }
@@ -1119,16 +1125,21 @@ public class ChessGUI {
     private static int toCp(int score){
         return (Math.abs(score) >= AI.MATE/2) ? (score>0? 10000 : -10000) : score;
     }
-    private static String classify(int lossCp, int bestScore, int chosenScore){
+    private static String classify(int lossCp){
         int loss = Math.abs(lossCp);
-        if(loss <= 20)  return "Bester Zug";
-        if(loss <= 60)  return "Sehr gut";
-        if(loss <= 100) return "Gut";
-        if(loss <= 200) return "Ungenauigkeit";
-        if(loss <= 400) return "Fehler";
+        if(loss == 0)   return "Bester Zug";
+        if(loss <= 40)  return "Sehr gut";
+        if(loss <= 80)  return "Gut";
+        if(loss <= 150) return "Ungenauigkeit";
+        if(loss <= 300) return "Fehler";
         return "Patzer (Blunder)";
     }
     private static double round1(double x){ return Math.round(x*10.0)/10.0; }
+
+    private static double accuracyFromAcpl(int acpl){
+        double acc = 103 - 3 * Math.sqrt(acpl);
+        return Math.max(0, Math.min(100, acc));
+    }
 
     private void showAnalysisDialog(AnalysisResult ar){
         String[] cats={"Bester Zug","Sehr gut","Gut","Ungenauigkeit","Fehler","Patzer (Blunder)"};
