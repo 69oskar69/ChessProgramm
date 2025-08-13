@@ -1097,15 +1097,18 @@ public class ChessGUI {
         // --- Drag capture via glass pane + window watcher
         private JComponent glass = null;
         private final MouseAdapter glassForwarder = new MouseAdapter() {
-            private void forward(MouseEvent e){
-                if (!dragging) return;
-                MouseEvent conv = SwingUtilities.convertMouseEvent((Component)e.getSource(), e, BoardPanel.this);
-                if (e.getID() == MouseEvent.MOUSE_RELEASED) onRelease(conv);
-                else onDrag(conv);
+            private MouseEvent toBoard(MouseEvent e){
+                return SwingUtilities.convertMouseEvent((Component)e.getSource(), e, BoardPanel.this);
             }
-            @Override public void mouseDragged(MouseEvent e){ forward(e); }
-            @Override public void mouseMoved(MouseEvent e){ forward(e); }
-            @Override public void mouseReleased(MouseEvent e){ forward(e); }
+            @Override public void mouseDragged(MouseEvent e){
+                if (!dragging) return;
+                onDrag(toBoard(e));
+            }
+            @Override public void mouseReleased(MouseEvent e){
+                if (!dragging) return;
+                onRelease(toBoard(e));
+            }
+            // NOTE: intentionally no mouseMoved override
         };
         private WindowAdapter windowWatcher = null;
 
@@ -1249,13 +1252,8 @@ public class ChessGUI {
         }
         private void onDrag(MouseEvent e){
             if(!dragging || busy || animating) return;
-            // If the button isn't held anymore, treat as release
-            if ((e.getModifiersEx() & InputEvent.BUTTON1_DOWN_MASK) == 0) {
-                onRelease(e);
-                return;
-            }
-            dragX=e.getX();
-            dragY=e.getY();
+            dragX = e.getX();
+            dragY = e.getY();
             repaint();
         }
         private void onRelease(MouseEvent e){
