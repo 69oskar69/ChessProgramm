@@ -17,6 +17,7 @@ import java.util.Objects;
 import java.util.Random;
 import java.util.Hashtable;
 import java.util.stream.Collectors;
+import java.util.Comparator;
 
 /**
  * Schach mit Swing-GUI, KI, Analyse, Sounds, Drag & Drop und animierten Zügen.
@@ -544,6 +545,10 @@ public class ChessGUI {
     private final Deque<Board> history = new ArrayDeque<>();
     private final List<PlyRecord> plies = new ArrayList<>();
 
+    private final List<PieceType> capturedByWhite = new ArrayList<>();
+    private final List<PieceType> capturedByBlack = new ArrayList<>();
+    private JLabel aiCapLabel, playerCapLabel;
+
     private AI ai = new AI(3);
     private Side human = Side.WHITE;
     private boolean flip = false; // true = Schwarz unten
@@ -595,7 +600,29 @@ public class ChessGUI {
         frame.setLayout(new BorderLayout());
 
         boardPanel=new BoardPanel();
-        frame.add(boardPanel, BorderLayout.CENTER);
+        JPanel boardContainer=new JPanel(new BorderLayout());
+        boardContainer.setOpaque(false);
+
+        aiCapLabel=new JLabel();
+        playerCapLabel=new JLabel();
+        aiCapLabel.setHorizontalAlignment(SwingConstants.CENTER);
+        playerCapLabel.setHorizontalAlignment(SwingConstants.CENTER);
+        Font scoreFont=new Font("SansSerif", Font.PLAIN, 20);
+        aiCapLabel.setFont(scoreFont);
+        playerCapLabel.setFont(scoreFont);
+
+        JPanel capPanel=new JPanel();
+        capPanel.setOpaque(false);
+        capPanel.setLayout(new BoxLayout(capPanel, BoxLayout.Y_AXIS));
+        aiCapLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        playerCapLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        capPanel.add(aiCapLabel);
+        capPanel.add(Box.createVerticalStrut(10));
+        capPanel.add(playerCapLabel);
+
+        boardContainer.add(boardPanel, BorderLayout.CENTER);
+        boardContainer.add(capPanel, BorderLayout.EAST);
+        frame.add(boardContainer, BorderLayout.CENTER);
 
         rightPanel=createRightControls();
         frame.add(rightPanel, BorderLayout.EAST);
@@ -612,6 +639,7 @@ public class ChessGUI {
         frame.setLocationRelativeTo(null);
         frame.setVisible(true);
         updateEvalBar();
+        updateScoreBoard();
     }
 
     private JMenuBar createMenu(){
@@ -739,6 +767,8 @@ public class ChessGUI {
         flip=(human==Side.BLACK); // deine Farbe unten
         board=Board.initial();
         history.clear(); plies.clear();
+        capturedByWhite.clear(); capturedByBlack.clear();
+        updateScoreBoard();
         lastMove=null; hintMove=null; selected=-1; legalFromSelected=List.of();
         status.setText("Neues Spiel: Du spielst " + human + ". " + board.sideToMove + " am Zug.");
         boardPanel.repaint();
@@ -751,10 +781,12 @@ public class ChessGUI {
         if(history.isEmpty()){ beep(); status.setText("Nichts zum Zurücknehmen."); return; }
         board = history.pop();
         if(!plies.isEmpty()) plies.remove(plies.size()-1);
+        recalcCaptures();
         selected=-1; legalFromSelected=List.of(); hintMove=null; lastMove=null;
         status.setText("Zug zurückgenommen. " + board.sideToMove + " am Zug.");
         boardPanel.repaint();
         updateEvalBar();
+        updateScoreBoard();
     }
 
     private void onHint(){
@@ -832,9 +864,20 @@ public class ChessGUI {
     private void commitMoveAndRecord(Move m){
         history.push(board.copy());
         plies.add(new PlyRecord(board.copy(), m));
+        Piece capturedPiece = null;
+        if(m.enPassant){
+            capturedPiece = board.at(m.to + (board.sideToMove==Side.WHITE? -8 : 8));
+        } else {
+            capturedPiece = board.at(m.to);
+        }
+        if(capturedPiece != null){
+            if(board.sideToMove==Side.WHITE) capturedByWhite.add(capturedPiece.type);
+            else capturedByBlack.add(capturedPiece.type);
+        }
         board = board.makeMove(m);
         lastMove = m;
         selected=-1; legalFromSelected=List.of(); hintMove=null;
+        updateScoreBoard();
     }
 
     private static String pretty(Move m){
@@ -850,6 +893,58 @@ public class ChessGUI {
     private void updateEvalBar(){
         int cp = (int)Math.max(-2000, Math.min(2000, (double)Eval.evaluate(board)));
         evalBar.setEvalCp(cp, human == Side.WHITE); // true = unten ist Weiß
+    }
+
+    private void updateScoreBoard(){
+        List<PieceType> playerCaps = (human==Side.WHITE) ? capturedByWhite : capturedByBlack;
+        List<PieceType> aiCaps = (human==Side.WHITE) ? capturedByBlack : capturedByWhite;
+        Side aiSide = human.opposite();
+        Side playerSide = human;
+
+        String aiPieces = piecesToString(aiCaps, playerSide);
+        String playerPieces = piecesToString(playerCaps, aiSide);
+
+        int diff = totalValue(playerCaps) - totalValue(aiCaps);
+        String aiScore = diff < 0 ? "+" + (-diff) : "";
+        String playerScore = diff > 0 ? "+" + diff : "";
+
+        aiCapLabel.setText(aiPieces + (aiScore.isEmpty()? "" : "  " + aiScore));
+        playerCapLabel.setText((playerScore.isEmpty()? "" : playerScore + "  ") + playerPieces);
+    }
+
+    private String piecesToString(List<PieceType> pieces, Side side){
+        List<PieceType> sorted = new ArrayList<>(pieces);
+        sorted.sort(Comparator.comparingInt(Eval::val));
+        StringBuilder sb=new StringBuilder();
+        for(PieceType pt: sorted){
+            sb.append(new Piece(pt, side).symbolUnicode());
+        }
+        return sb.toString();
+    }
+
+    private int totalValue(List<PieceType> pieces){
+        int sum=0;
+        for(PieceType pt: pieces) sum += Eval.val(pt)/100;
+        return sum;
+    }
+
+    private void recalcCaptures(){
+        capturedByWhite.clear();
+        capturedByBlack.clear();
+        for(PlyRecord pr: plies){
+            Move mv=pr.move;
+            Board b=pr.before;
+            Piece capturedPiece;
+            if(mv.enPassant){
+                capturedPiece = b.at(mv.to + (b.sideToMove==Side.WHITE ? -8 : 8));
+            } else {
+                capturedPiece = b.at(mv.to);
+            }
+            if(capturedPiece!=null){
+                if(b.sideToMove==Side.WHITE) capturedByWhite.add(capturedPiece.type);
+                else capturedByBlack.add(capturedPiece.type);
+            }
+        }
     }
 
     // ---------- Analyse (Quick) ----------
