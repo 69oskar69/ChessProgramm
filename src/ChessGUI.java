@@ -5,6 +5,7 @@ import javax.swing.table.AbstractTableModel;
 import java.awt.*;
 import java.awt.event.*;
 import javax.swing.Timer;
+import java.io.*;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -161,6 +162,39 @@ public class ChessGUI {
             b.wCastleK=wCastleK; b.wCastleQ=wCastleQ; b.bCastleK=bCastleK; b.bCastleQ=bCastleQ;
             b.halfmoveClock=halfmoveClock; b.fullmoveNumber=fullmoveNumber;
             return b;
+        }
+        String toFEN(){
+            StringBuilder sb=new StringBuilder();
+            for(int r=7;r>=0;r--){
+                int empty=0;
+                for(int f=0;f<8;f++){
+                    Piece p=sq[idx(f,r)];
+                    if(p==null) empty++;
+                    else{
+                        if(empty>0){ sb.append(empty); empty=0; }
+                        char c = switch(p.type){
+                            case KING->'k'; case QUEEN->'q'; case ROOK->'r'; case BISHOP->'b'; case KNIGHT->'n'; default->'p';
+                        };
+                        if(p.side==Side.WHITE) c=Character.toUpperCase(c);
+                        sb.append(c);
+                    }
+                }
+                if(empty>0) sb.append(empty);
+                if(r>0) sb.append('/');
+            }
+            sb.append(' ');
+            sb.append(sideToMove==Side.WHITE?'w':'b');
+            sb.append(' ');
+            String cast="";
+            if(wCastleK) cast+="K"; if(wCastleQ) cast+="Q"; if(bCastleK) cast+="k"; if(bCastleQ) cast+="q";
+            sb.append(cast.isEmpty()?"-":cast);
+            sb.append(' ');
+            sb.append(enPassant==-1?"-":UCI.sq(enPassant));
+            sb.append(' ');
+            sb.append(halfmoveClock);
+            sb.append(' ');
+            sb.append(fullmoveNumber);
+            return sb.toString();
         }
         Piece at(int i){ return (i>=0&&i<64)?sq[i]:null; }
         int kingSquare(Side s){ for(int i=0;i<64;i++){ Piece p=sq[i]; if(p!=null&&p.type==PieceType.KING&&p.side==s) return i; } return -1; }
@@ -522,6 +556,111 @@ public class ChessGUI {
         static final class ScoredMove { final Move move; final int score; ScoredMove(Move m,int s){ move=m; score=s; } }
     }
 
+    static final class StockfishEngine implements AutoCloseable {
+        private final Process proc;
+        private final BufferedReader in;
+        private final BufferedWriter out;
+
+        StockfishEngine() throws IOException {
+            ProcessBuilder pb = new ProcessBuilder("stockfish");
+            pb.redirectErrorStream(true);
+            proc = pb.start();
+            in = new BufferedReader(new InputStreamReader(proc.getInputStream()));
+            out = new BufferedWriter(new OutputStreamWriter(proc.getOutputStream()));
+            send("uci");
+            waitFor("uciok");
+            send("isready");
+            waitFor("readyok");
+        }
+
+        private void send(String cmd) throws IOException {
+            out.write(cmd);
+            out.write("\n");
+            out.flush();
+        }
+
+        private void waitFor(String token) throws IOException {
+            String line;
+            while((line = in.readLine()) != null){
+                if(line.contains(token)) break;
+            }
+        }
+
+        List<EngineLine> analyze(String fen, int depth, int multipv) throws IOException {
+            send("position fen " + fen);
+            send("go depth " + depth + " multipv " + multipv);
+            List<EngineLine> res = new ArrayList<>();
+            String line;
+            while((line = in.readLine()) != null){
+                if(line.startsWith("info") && line.contains(" pv ")){
+                    String[] t = line.split("\\s+");
+                    int mv=1; String scoreType="cp"; int score=0; String pv=""; String move="";
+                    for(int i=0;i<t.length;i++){
+                        switch(t[i]){
+                            case "multipv" -> mv = Integer.parseInt(t[++i]);
+                            case "score" -> { scoreType=t[++i]; score=Integer.parseInt(t[++i]); }
+                            case "pv" -> {
+                                if(i+1<t.length) move = t[i+1];
+                                StringBuilder sb=new StringBuilder();
+                                for(int j=i+1;j<t.length;j++) sb.append(t[j]).append(' ');
+                                pv = sb.toString().trim();
+                                i = t.length; // break
+                            }
+                        }
+                    }
+                    if(!move.isEmpty()){
+                        EngineLine el=new EngineLine(move, scoreType, score, pv, mv);
+                        res.add(el);
+                    }
+                } else if(line.startsWith("bestmove")){
+                    break;
+                }
+            }
+            res.sort(Comparator.comparingInt(a -> a.multipv));
+            return res;
+        }
+
+        EngineLine analyzeMove(String fen, String move, int depth) throws IOException {
+            send("position fen " + fen);
+            send("go depth " + depth + " searchmoves " + move);
+            EngineLine result = null;
+            String line;
+            while((line = in.readLine()) != null){
+                if(line.startsWith("info") && line.contains(" pv ")){
+                    String[] t=line.split("\\s+");
+                    String scoreType="cp"; int score=0; String pv="";
+                    for(int i=0;i<t.length;i++){
+                        switch(t[i]){
+                            case "score" -> { scoreType=t[++i]; score=Integer.parseInt(t[++i]); }
+                            case "pv" -> {
+                                StringBuilder sb=new StringBuilder();
+                                for(int j=i+1;j<t.length;j++) sb.append(t[j]).append(' ');
+                                pv=sb.toString().trim(); i=t.length;
+                            }
+                        }
+                    }
+                    result = new EngineLine(move, scoreType, score, pv, 1);
+                } else if(line.startsWith("bestmove")) break;
+            }
+            return result;
+        }
+
+        @Override public void close() throws IOException {
+            send("quit");
+            try{ proc.waitFor(); }catch(InterruptedException ignored){}
+        }
+
+        static final class EngineLine {
+            final String move;
+            final String type;
+            final int score;
+            final String pv;
+            final int multipv;
+            EngineLine(String move,String type,int score,String pv,int mv){ this.move=move; this.type=type; this.score=score; this.pv=pv; this.multipv=mv; }
+            int scoreCp(){ return type.equals("mate") ? (score>0?100000:-100000) : score; }
+        }
+    }
+
     // ---------- Sound ----------
     static final class SoundFX {
         static boolean enabledPawn = true;
@@ -865,7 +1004,7 @@ public class ChessGUI {
         boolean check = board.isInCheck(board.sideToMove);
         String msg = check ? ("Schachmatt! "+board.sideToMove+" ist matt. "+board.sideToMove.opposite()+" gewinnt.")
                 : "Patt! Unentschieden.";
-        JOptionPane.showMessageDialog(frame, msg + "\nDie Partie wird jetzt analysiert (Schnellmodus).", "Spielende", JOptionPane.INFORMATION_MESSAGE);
+        JOptionPane.showMessageDialog(frame, msg + "\nDie Partie wird jetzt mit Stockfish analysiert.", "Spielende", JOptionPane.INFORMATION_MESSAGE);
         runPostGameAnalysis();
     }
 
@@ -935,6 +1074,21 @@ public class ChessGUI {
         String s=UCI.fromTo(m.from, m.to);
         if(m.isPromotion()) s += UCI.promoChar(m.promotion);
         return s;
+    }
+
+    private static String prettyUci(Board b, String uci){
+        int from = UCI.parseSquare(uci.substring(0,2));
+        int to = UCI.parseSquare(uci.substring(2,4));
+        PieceType promo = null;
+        if(uci.length()>4){
+            promo = switch(uci.charAt(4)){
+                case 'q'->PieceType.QUEEN; case 'r'->PieceType.ROOK; case 'b'->PieceType.BISHOP; case 'n'->PieceType.KNIGHT; default->null;
+            };
+        }
+        for(Move m: b.legalMoves()){
+            if(m.from==from && m.to==to && Objects.equals(m.promotion, promo)) return pretty(m);
+        }
+        return pretty(new Move(from,to,promo,false,false,false,false));
     }
 
     private void beep(){ Toolkit.getDefaultToolkit().beep(); }
@@ -1011,9 +1165,10 @@ public class ChessGUI {
         final int lossCp;      // Centipawn-Verlust ggü. Best
         final int evalAfterW;  // Eval nach dem Zug, Weiß-Sicht (cp)
         final String label;
-        MoveAnalysis(int plyIndex,int moveNumber,Side s,String mv,String best,int loss,int evalW,String label){
+        final String pv;
+        MoveAnalysis(int plyIndex,int moveNumber,Side s,String mv,String best,int loss,int evalW,String label,String pv){
             this.plyIndex=plyIndex; this.moveNumber=moveNumber; this.side=s;
-            this.moveStr=mv; this.bestStr=best; this.lossCp=loss; this.evalAfterW=evalW; this.label=label;
+            this.moveStr=mv; this.bestStr=best; this.lossCp=loss; this.evalAfterW=evalW; this.label=label; this.pv=pv;
         }
     }
     static final class AnalysisResult {
@@ -1034,18 +1189,10 @@ public class ChessGUI {
             return;
         }
 
-        // Quick-Analyse Parameter (auf ~10–30s gezielt)
-        final int MAX_PLIES = 80;                 // analysiere nur die letzten 80 Halbzüge
-        final long TIME_BUDGET_MS = 20_000L;      // ~20 Sekunden Budget
-        final int TOP_K = 8;                      // Top-K Wurzelzüge
-        final int ANALYSIS_DEPTH = Math.min(3, ai.getDepth()); // Tiefe 2–3 reicht meist
-
+        final int ANALYSIS_DEPTH = 12;
         final int totalPlies = plies.size();
-        final int startIndex = Math.max(0, totalPlies - MAX_PLIES);
-        final int toAnalyze = totalPlies - startIndex;
-
         final JDialog progress = new JDialog(frame,"Analysiere…",true);
-        final JProgressBar bar=new JProgressBar(0, Math.max(1,toAnalyze));
+        final JProgressBar bar=new JProgressBar(0, Math.max(1,totalPlies));
         bar.setStringPainted(true);
         bar.setBorder(new EmptyBorder(10,10,10,10));
         progress.add(bar);
@@ -1056,54 +1203,56 @@ public class ChessGUI {
             @Override protected AnalysisResult doInBackground(){
                 int sumLossW=0, sumLossB=0, countW=0, countB=0;
                 List<MoveAnalysis> rows=new ArrayList<>();
-                long startTime = System.currentTimeMillis();
-                boolean truncated=false;
-                int processed=0;
+                try(StockfishEngine sf = new StockfishEngine()){
+                    for(int i=0;i<totalPlies;i++){
+                        PlyRecord pr = plies.get(i);
+                        Side mover = pr.before.sideToMove;
+                        String fen = pr.before.toFEN();
 
-                for(int i=startIndex;i<totalPlies;i++){
-                    PlyRecord pr = plies.get(i);
-                    Side mover = pr.before.sideToMove;
+                        List<StockfishEngine.EngineLine> lines = sf.analyze(fen, ANALYSIS_DEPTH, 3);
+                        StockfishEngine.EngineLine best = lines.isEmpty()? null : lines.get(0);
+                        StockfishEngine.EngineLine chosen = null;
+                        String chosenUci = pr.move.toString();
+                        for(StockfishEngine.EngineLine l: lines){
+                            if(l.move.equals(chosenUci)){ chosen = l; break; }
+                        }
+                        if(chosen==null) chosen = sf.analyzeMove(fen, chosenUci, ANALYSIS_DEPTH);
 
-                    int bestScore   = ai.bestScoreApprox(pr.before, ANALYSIS_DEPTH, TOP_K);
-                    int chosenScore = ai.scoreMove(pr.before, pr.move, ANALYSIS_DEPTH);
+                        int bestScore = best!=null? best.scoreCp():0;
+                        int chosenScore = chosen!=null? chosen.scoreCp():0;
+                        int loss = Math.max(0, toCp(bestScore) - toCp(chosenScore));
+                        int evalAfterW = (mover==Side.WHITE) ? toCp(chosenScore) : -toCp(chosenScore);
+                        String label = classify(loss, bestScore, chosenScore);
 
-                    int loss = Math.max(0, toCp(bestScore) - toCp(chosenScore));
-                    int evalAfterW = (mover==Side.WHITE) ? toCp(chosenScore) : -toCp(chosenScore);
-                    String label = classify(loss, bestScore, chosenScore);
+                        if(mover==Side.WHITE){ sumLossW+=loss; countW++; } else { sumLossB+=loss; countB++; }
 
-                    if(mover==Side.WHITE){ sumLossW+=loss; countW++; } else { sumLossB+=loss; countB++; }
+                        int moveNo = pr.before.fullmoveNumber;
+                        String moveStr = pretty(pr.move);
+                        String bestStr = best!=null? prettyUci(pr.before, best.move) : moveStr;
+                        String pv = best!=null? best.pv : "";
 
-                    int moveNo = pr.before.fullmoveNumber;
-                    String moveStr = pretty(pr.move);
-
-                    List<AI.ScoredMove> root = ai.analyzeRoot(pr.before, 1); // nur 1 Ply fürs Label – billig
-                    root.sort((x,y)-> Integer.compare(y.score, x.score));
-                    String bestStr = root.isEmpty()? moveStr : pretty(root.get(0).move);
-
-                    rows.add(new MoveAnalysis(i, moveNo, mover, moveStr, bestStr, loss, evalAfterW, label));
-                    processed++;
-                    publish(processed);
-
-                    if(System.currentTimeMillis() - startTime > TIME_BUDGET_MS){
-                        truncated=true;
-                        break;
+                        rows.add(new MoveAnalysis(i, moveNo, mover, moveStr, bestStr, loss, evalAfterW, label, pv));
+                        publish(i+1);
                     }
+                }catch(IOException ex){
+                    // ignore
                 }
-
                 int acplW = countW==0?0: (int)Math.round((double)sumLossW/countW);
                 int acplB = countB==0?0: (int)Math.round((double)sumLossB/countB);
-
                 double accW = Math.max(0, 100.0 - acplW/12.0);
                 double accB = Math.max(0, 100.0 - acplB/12.0);
-
-                return new AnalysisResult(rows, round1(accW), round1(accB), acplW, acplB, truncated, processed, toAnalyze);
+                return new AnalysisResult(rows, round1(accW), round1(accB), acplW, acplB, false, totalPlies, totalPlies);
             }
             @Override protected void process(List<Integer> chunks){
                 bar.setValue(chunks.get(chunks.size()-1));
             }
             @Override protected void done(){
                 progress.dispose();
-                try{ showAnalysisDialog(get()); } catch(Exception ex){
+                try{
+                    AnalysisResult ar = get();
+                    if(!ar.rows.isEmpty()) evalBar.setEvalCp(ar.rows.get(ar.rows.size()-1).evalAfterW, flip);
+                    showAnalysisDialog(ar);
+                } catch(Exception ex){
                     JOptionPane.showMessageDialog(frame,"Analyse fehlgeschlagen.","Analyse",JOptionPane.ERROR_MESSAGE);
                 }
             }
@@ -1135,22 +1284,21 @@ public class ChessGUI {
             else bCnt.put(r.label, bCnt.get(r.label)+1);
         }
 
-        JDialog dlg=new JDialog(frame,"Partie‑Analyse (Schnell)",true);
+        JDialog dlg=new JDialog(frame,"Partie‑Analyse (Stockfish)",true);
         dlg.setLayout(new BorderLayout(10,10));
         dlg.getRootPane().setBorder(new EmptyBorder(10,10,10,10));
 
         JPanel top=new JPanel(new GridLayout(3,1,6,6));
         JLabel accLine = new JLabel("Genauigkeit (Schätzung):  Weiß " + ar.accWhite + "%   |   Schwarz " + ar.accBlack + "%");
         JLabel acplLine= new JLabel("ACPL: Weiß " + ar.acplWhite + "   |   Schwarz " + ar.acplBlack + "   (niedriger ist besser)");
-        String trunc = ar.truncated ? ("Hinweis: Quick‑Analyse – " + ar.analyzed + "/" + ar.total + " Halbzüge gewertet, Top‑K=8, Tiefe≈2–3.")
-                : "Quick‑Analyse – vollständige Auswertung.";
-        JLabel info = new JLabel(trunc);
+        String infoText = "Analyse mit Stockfish – MultiPV 3.";
+        JLabel info = new JLabel(infoText);
         accLine.setFont(accLine.getFont().deriveFont(Font.BOLD, 15f));
         top.add(accLine); top.add(acplLine); top.add(info);
         dlg.add(top, BorderLayout.NORTH);
 
         JTable table=new JTable(new AbstractTableModel(){
-            final String[] cols={"#", "Seite", "Zug", "Kategorie", "Verlust (cp)", "Bester Zug", "Eval nach Zug (Weiß)"};
+            final String[] cols={"#", "Seite", "Zug", "Kategorie", "Verlust (cp)", "Bester Zug", "Eval nach Zug (Weiß)", "PV"};
             @Override public int getRowCount(){ return ar.rows.size(); }
             @Override public int getColumnCount(){ return cols.length; }
             @Override public String getColumnName(int c){ return cols[c]; }
@@ -1164,6 +1312,7 @@ public class ChessGUI {
                     case 4 -> m.lossCp;
                     case 5 -> m.bestStr;
                     case 6 -> (m.evalAfterW>0? "+" : "") + m.evalAfterW;
+                    case 7 -> m.pv;
                     default -> "";
                 };
             }
@@ -1174,8 +1323,7 @@ public class ChessGUI {
         table.getColumnModel().getColumn(4).setMaxWidth(100);
         dlg.add(new JScrollPane(table), BorderLayout.CENTER);
 
-        JLabel note=new JLabel("<html><i>Hinweis:</i> Quick‑Analyse nutzt eine reduzierte Suchtiefe und nur die besten Wurzelzüge. " +
-                "Für exaktere Ergebnisse könnte man später eine Tiefenanalyse hinzufügen.</html>");
+        JLabel note=new JLabel("<html><i>Hinweis:</i> Analyse mit Stockfish (Tiefe 12, MultiPV 3).</html>");
         note.setForeground(new Color(90,90,90));
         dlg.add(note, BorderLayout.SOUTH);
 
