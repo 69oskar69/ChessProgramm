@@ -806,7 +806,7 @@ public class ChessGUI {
                                 () -> status.setText(board.legalMoves().isEmpty()
                                         ? "Spielende."
                                         : "Du bist dran (" + human + ")."),
-                                true);
+                                false); // <— teleport AI move too
                     }catch(Exception ex){ status.setText("Fehler in der KI."); busy=false; }
                 }
             }.execute();
@@ -1168,6 +1168,7 @@ public class ChessGUI {
 
     // ---------- Zeichenbrett (mit Drag&Drop + Animation + deutlichem Hint) ----------
     final class BoardPanel extends JPanel {
+        private int paintDragX = 0, paintDragY = 0;   // last drawn top-left of floating piece
 
         // --- Layout / Farben
         final int TILE=86;
@@ -1353,10 +1354,12 @@ public class ChessGUI {
             Point tl = boardIndexToVisualXY(i);
             dragOffsetX = dragX - tl.x;
             dragOffsetY = dragY - tl.y;
+            paintDragX = dragX - dragOffsetX;
+            paintDragY = dragY - dragOffsetY;
+            repaint(new Rectangle(paintDragX, paintDragY, TILE, TILE));
 
             // regelmäßiges Repaint, falls keine Drag-Events eintreffen
-            dragTimer = new Timer(1000/60, ev -> repaint());
-            dragTimer.start();
+
 
             // NEW: capture all mouse events within the frame while dragging
             installGlass();
@@ -1367,15 +1370,30 @@ public class ChessGUI {
         }
         private void onDrag(MouseEvent e){
             if(!dragging || busy || animating) return;
-            // If somehow we get a drag with the button no longer down, treat as release
+
+            // If the button is no longer down, treat as release
             if ((e.getModifiersEx() & InputEvent.BUTTON1_DOWN_MASK) == 0) {
                 onRelease(e);
                 return;
             }
-            // Mausposition merken und Brett neu zeichnen
-            dragX=e.getX(); dragY=e.getY();
-            repaint();
+
+            // Save old floating-piece rect
+            int oldX = paintDragX;
+            int oldY = paintDragY;
+
+            // Update mouse + floating-piece top-left
+            dragX = e.getX();
+            dragY = e.getY();
+            paintDragX = dragX - dragOffsetX;
+            paintDragY = dragY - dragOffsetY;
+
+            // Repaint only the area that actually changed
+            int pad = 3; // small padding for AA/shadow
+            Rectangle r1 = new Rectangle(oldX - pad, oldY - pad, TILE + 2*pad, TILE + 2*pad);
+            Rectangle r2 = new Rectangle(paintDragX - pad, paintDragY - pad, TILE + 2*pad, TILE + 2*pad);
+            repaint(r1.union(r2));
         }
+
         private void onRelease(MouseEvent e){
             if(!dragging) return;
             endDrag();
