@@ -18,6 +18,8 @@ import java.util.Random;
 import java.util.Hashtable;
 import java.util.stream.Collectors;
 import java.util.Comparator;
+import javax.swing.event.MouseInputAdapter;
+
 
 /**
  * Schach mit Swing-GUI, KI, Analyse, Sounds, Drag & Drop und animierten Zügen.
@@ -26,6 +28,24 @@ import java.util.Comparator;
  * - ELO-Slider (800/1100/1400/1700)
  */
 public class ChessGUI {
+    // --- Board-Konstanten & Palette ---
+    private static final int TILE = 72;          // Kachelgröße in px
+    private static final int MARGIN = 16;        // äußerer Rand ums Brett
+    private static final int ANIM_MS = 180;      // Animationsdauer in ms
+
+    // Farben (kannst du nach Geschmack anpassen)
+    private static final Color LIGHT = new Color(238,238,210);
+    private static final Color DARK  = new Color(118,150, 86);
+    private static final Color LAST  = new Color(255,215,  0, 90);   // letzte Bewegung
+    private static final Color CHECK = new Color(255, 80, 80,120);   // König im Schach
+    private static final Color SEL   = new Color( 70,130,180,120);   // ausgewähltes Feld
+    private static final Color CAP   = new Color(220, 90, 90,180);   // Capture-Ring
+    private static final Color MOVE  = new Color( 30,144,255,180);   // Punkt für stillen Zug
+
+    // Hint-Overlay + Pfeil
+    private static final Color HINT_FROM_OVER = new Color( 60,180, 75,120);
+    private static final Color HINT_TO_OVER   = new Color( 60,180, 75, 90);
+    private static final Color HINT_ARROW     = new Color( 60,180, 75,200);
 
     // ---------- Engine-Basics ----------
     enum Side { WHITE, BLACK;
@@ -766,35 +786,9 @@ public class ChessGUI {
         maybeAIThink();
     }
 
-    private void onUndo(){
-        if(busy){ beep(); status.setText("KI/Animation läuft – Undo nicht möglich."); return; }
-        if(history.isEmpty()){ beep(); status.setText("Nichts zum Zurücknehmen."); return; }
-        board = history.pop();
-        if(!plies.isEmpty()) plies.remove(plies.size()-1);
-        recalcCaptures();
-        selected=-1; legalFromSelected=List.of(); hintMove=null; lastMove=null;
-        status.setText("Zug zurückgenommen. " + board.sideToMove + " am Zug.");
-        boardPanel.repaint();
-        updateEvalBar();
-        updateScoreBoard();
-    }
+    private void onUndo(){ ChessGUI.this.onUndo(); }
 
-    private void onHint(){
-        if(busy){ beep(); status.setText("KI/Animation läuft…"); return; }
-        if(board.legalMoves().isEmpty()){ beep(); status.setText("Keine legalen Züge."); return; }
-        busy=true;
-        status.setText("Berechne Hinweis…");
-        new SwingWorker<Move,Void>(){
-            @Override protected Move doInBackground(){ return ai.findBestMove(board); }
-            @Override protected void done(){
-                try{
-                    hintMove=get();
-                    status.setText(hintMove!=null?("Vorschlag: "+pretty(hintMove)):"Kein Vorschlag.");
-                }catch(Exception ex){ status.setText("Fehler beim Hinweis."); }
-                busy=false; boardPanel.repaint();
-            }
-        }.execute();
-    }
+    private void onHint(){ ChessGUI.this.onHint();}
 
     private void maybeAIThink(){
         if(busy) return;
@@ -1207,6 +1201,8 @@ public class ChessGUI {
         private int animOffsetX = 0;
         private int animOffsetY = 0;
 
+
+
         private void endDrag() {
             if (dragTimer != null) {
                 dragTimer.stop();
@@ -1271,9 +1267,13 @@ public class ChessGUI {
 
             // Shortcuts: H=Hint, U=Undo
             getInputMap(WHEN_IN_FOCUSED_WINDOW).put(KeyStroke.getKeyStroke('H'), "hint");
-            getActionMap().put("hint", new AbstractAction(){ @Override public void actionPerformed(ActionEvent e){ onHint(); }});
+            getActionMap().put("hint", new AbstractAction(){
+                @Override public void actionPerformed(ActionEvent e){ ChessGUI.this.onHint(); }
+            });
             getInputMap(WHEN_IN_FOCUSED_WINDOW).put(KeyStroke.getKeyStroke('U'), "undo");
-            getActionMap().put("undo", new AbstractAction(){ @Override public void actionPerformed(ActionEvent e){ onUndo(); }});
+            getActionMap().put("undo", new AbstractAction(){
+                @Override public void actionPerformed(ActionEvent e){ ChessGUI.this.onUndo(); }
+            });
         }
 
         // ------ Animation API
@@ -1598,4 +1598,3 @@ public class ChessGUI {
         }
     }
 }
-
