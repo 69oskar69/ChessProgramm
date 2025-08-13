@@ -556,12 +556,12 @@ public class ChessGUI {
         static final class ScoredMove { final Move move; final int score; ScoredMove(Move m,int s){ move=m; score=s; } }
     }
 
-    static final class StockfishEngine implements AutoCloseable {
+    static final class StockfishAnalysis implements AutoCloseable {
         private final Process proc;
         private final BufferedReader in;
         private final BufferedWriter out;
 
-        StockfishEngine() throws IOException {
+        StockfishAnalysis() throws IOException {
             ProcessBuilder pb = new ProcessBuilder("stockfish");
             pb.redirectErrorStream(true);
             proc = pb.start();
@@ -705,7 +705,8 @@ public class ChessGUI {
     private final List<PieceType> capturedByBlack = new ArrayList<>();
     private JLabel capNorthLabel, capSouthLabel;
 
-    private AI ai = new AI(3);
+    private StockfishEngine engine;
+    private int engineDepth = 3;
     private Side human = Side.WHITE;
     private boolean flip = false; // true = Schwarz unten
 
@@ -719,6 +720,7 @@ public class ChessGUI {
     private JPanel rightPanel;
     private JLabel depthLabel;
     private JSlider depthSlider;
+    private JTextField enginePathField;
     private JCheckBox sfxPawn, sfxExtra;
     private EvalBar evalBar;
 
@@ -755,6 +757,15 @@ public class ChessGUI {
         frame.setDefaultCloseOperation(WindowConstants.EXIT_ON_CLOSE);
         frame.setLayout(new BorderLayout());
 
+        engine = new StockfishEngine();
+        try { engine.start(); }
+        catch (IOException ex) {
+            JOptionPane.showMessageDialog(null,
+                    "Stockfish start failed: " + ex.getMessage() +
+                            "\nBitte Engine-Pfad angeben.",
+                    "Stockfish", JOptionPane.WARNING_MESSAGE);
+        }
+
         boardPanel=new BoardPanel();
         JPanel boardContainer=new JPanel(new BorderLayout());
         boardContainer.setOpaque(false);
@@ -784,6 +795,9 @@ public class ChessGUI {
         frame.pack();
         frame.setLocationRelativeTo(null);
         frame.setVisible(true);
+        frame.addWindowListener(new java.awt.event.WindowAdapter(){
+            @Override public void windowClosing(java.awt.event.WindowEvent e){ if(engine!=null) engine.stop(); }
+        });
         updateEvalBar();
         updateScoreBoard();
     }
@@ -801,7 +815,7 @@ public class ChessGUI {
         newB.addActionListener(e -> newGame(Side.BLACK));
         undo.addActionListener(e -> onUndo());
         analyzeInfo.addActionListener(e -> JOptionPane.showMessageDialog(frame, "Die Post‑Game‑Analyse startet automatisch bei Spielende (Matt/Patt).", "Info", JOptionPane.INFORMATION_MESSAGE));
-        quit.addActionListener(e -> frame.dispose());
+        quit.addActionListener(e -> { if(engine!=null) engine.stop(); frame.dispose(); });
         game.add(newW); game.add(newB); game.addSeparator(); game.add(undo); game.add(analyzeInfo); game.addSeparator(); game.add(quit);
 
         JMenu view = new JMenu("Ansicht");
@@ -842,6 +856,16 @@ public class ChessGUI {
         p.setOpaque(false);
         p.setLayout(new BoxLayout(p, BoxLayout.Y_AXIS));
 
+        JLabel pathLbl=new JLabel("Engine-Pfad");
+        pathLbl.setAlignmentX(Component.LEFT_ALIGNMENT);
+        enginePathField = new JTextField(engine.getPath(), 15);
+        enginePathField.setMaximumSize(new Dimension(Integer.MAX_VALUE, enginePathField.getPreferredSize().height));
+        enginePathField.addActionListener(e -> restartEngine());
+        enginePathField.setAlignmentX(Component.LEFT_ALIGNMENT);
+        p.add(pathLbl);
+        p.add(enginePathField);
+        p.add(Box.createVerticalStrut(12));
+
         JLabel diffLbl=new JLabel("KI‑Schwierigkeit (ELO)");
         diffLbl.setAlignmentX(Component.LEFT_ALIGNMENT);
         p.add(diffLbl);
@@ -855,7 +879,7 @@ public class ChessGUI {
         for (int i=0;i<ELO_LEVELS.length;i++) labels.put(i, new JLabel(String.valueOf(ELO_LEVELS[i])));
         depthSlider.setLabelTable(labels);
 
-        ai.setDepth(depthFromIndex(depthSlider.getValue()));
+        engineDepth = depthFromIndex(depthSlider.getValue());
         depthLabel=new JLabel();
         depthSlider.addChangeListener(e -> updateDepthLabel());
         updateDepthLabel(); // initial
@@ -903,8 +927,24 @@ public class ChessGUI {
 
     private void updateDepthLabel(){
         int idx = depthSlider.getValue();
-        ai.setDepth(depthFromIndex(idx));
-        depthLabel.setText("ELO ca. " + ELO_LEVELS[idx] + "  –  " + labelFromIndex(idx) + "  (Tiefe " + ai.getDepth() + ")");
+        engineDepth = depthFromIndex(idx);
+        depthLabel.setText("ELO ca. " + ELO_LEVELS[idx] + "  –  " + labelFromIndex(idx) + "  (Tiefe " + engineDepth + ")");
+    }
+
+    private void restartEngine(){
+        try{
+            if(engine!=null) engine.stop();
+            StockfishEngine newEngine = new StockfishEngine(enginePathField.getText().trim());
+            newEngine.start();
+            engine = newEngine;
+            status.setText("Engine gestartet.");
+        }catch(IOException ex){
+            engine = null;
+            status.setText("Engine-Start fehlgeschlagen.");
+            JOptionPane.showMessageDialog(frame,
+                    "Stockfish konnte nicht gestartet werden:\n" + ex.getMessage(),
+                    "Fehler", JOptionPane.ERROR_MESSAGE);
+        }
     }
 
     private void newGame(Side side){
@@ -949,12 +989,19 @@ public class ChessGUI {
 
     private void onHint(){
         if(busy) return;
+        if(engine == null || !engine.isRunning()){
+            status.setText("Engine nicht verfügbar.");
+            return;
+        }
         if(board.legalMoves().isEmpty()) return;
 
         status.setText("Hint wird berechnet…");
         busy = true;
         new SwingWorker<Move,Void>(){
-            @Override protected Move doInBackground(){ return ai.findBestMove(board); }
+            @Override protected Move doInBackground(){
+                try{ return engine.getBestMove(board.toFEN(), engineDepth); }
+                catch(Exception ex){ return null; }
+            }
             @Override protected void done(){
                 try{
                     hintMove = get();
@@ -975,11 +1022,18 @@ public class ChessGUI {
     private void maybeAIThink(){
         if(busy) return;
         if(board.legalMoves().isEmpty()){ onGameOverWithAnalysis(); return; }
+        if(engine == null || !engine.isRunning()){
+            status.setText("Engine nicht verfügbar.");
+            return;
+        }
         if(board.sideToMove!=human){
-            status.setText("KI denkt… (Tiefe "+ai.getDepth()+")");
+            status.setText("KI denkt… (Tiefe "+engineDepth+")");
             busy=true;
             new SwingWorker<Move,Void>(){
-                @Override protected Move doInBackground(){ return ai.findBestMove(board); }
+                @Override protected Move doInBackground(){
+                    try{ return engine.getBestMove(board.toFEN(), engineDepth); }
+                    catch(Exception ex){ return null; }
+                }
                 @Override protected void done(){
                     try{
                         Move m=get();
@@ -1203,17 +1257,17 @@ public class ChessGUI {
             @Override protected AnalysisResult doInBackground(){
                 int sumLossW=0, sumLossB=0, countW=0, countB=0;
                 List<MoveAnalysis> rows=new ArrayList<>();
-                try(StockfishEngine sf = new StockfishEngine()){
+                try(StockfishAnalysis sf = new StockfishAnalysis()){
                     for(int i=0;i<totalPlies;i++){
                         PlyRecord pr = plies.get(i);
                         Side mover = pr.before.sideToMove;
                         String fen = pr.before.toFEN();
 
-                        List<StockfishEngine.EngineLine> lines = sf.analyze(fen, ANALYSIS_DEPTH, 3);
-                        StockfishEngine.EngineLine best = lines.isEmpty()? null : lines.get(0);
-                        StockfishEngine.EngineLine chosen = null;
+                        List<StockfishAnalysis.EngineLine> lines = sf.analyze(fen, ANALYSIS_DEPTH, 3);
+                        StockfishAnalysis.EngineLine best = lines.isEmpty()? null : lines.get(0);
+                        StockfishAnalysis.EngineLine chosen = null;
                         String chosenUci = pr.move.toString();
-                        for(StockfishEngine.EngineLine l: lines){
+                        for(StockfishAnalysis.EngineLine l: lines){
                             if(l.move.equals(chosenUci)){ chosen = l; break; }
                         }
                         if(chosen==null) chosen = sf.analyzeMove(fen, chosenUci, ANALYSIS_DEPTH);
