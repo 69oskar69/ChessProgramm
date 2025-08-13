@@ -1187,6 +1187,27 @@ public class ChessGUI {
             dragOffsetX = dragX - tl.x;
             dragOffsetY = dragY - tl.y;
 
+            // regelmäßiges Repaint, falls keine Drag-Events eintreffen
+            dragTimer = new Timer(1000/60, ev -> repaint());
+            dragTimer.start();
+
+            // Globale Maus-Events beobachten, damit Drag außerhalb des Panels weiterläuft
+            globalMouse = ev -> {
+                if(!(ev instanceof MouseEvent me) || !dragging) return;
+                // Ereignisse vom Brett selbst ignorieren – die lokalen Listener kümmern sich darum
+                if(me.getComponent()==BoardPanel.this) return;
+                if(me.getID()==MouseEvent.MOUSE_DRAGGED){
+                    MouseEvent conv = SwingUtilities.convertMouseEvent(me.getComponent(), me, BoardPanel.this);
+                    dragX = conv.getX();
+                    dragY = conv.getY();
+                } else if(me.getID()==MouseEvent.MOUSE_RELEASED){
+                    MouseEvent conv = SwingUtilities.convertMouseEvent(me.getComponent(), me, BoardPanel.this);
+                    onRelease(conv);
+                }
+            };
+            Toolkit.getDefaultToolkit().addAWTEventListener(globalMouse,
+                    AWTEvent.MOUSE_EVENT_MASK | AWTEvent.MOUSE_MOTION_EVENT_MASK);
+
             repaint();
         }
         private void onDrag(MouseEvent e){
