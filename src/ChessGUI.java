@@ -1093,6 +1093,7 @@ public class ChessGUI {
         private Piece dragPiece=null;
         private int dragX=0, dragY=0; // Mausposition
         private int dragOffsetX=0, dragOffsetY=0; // Offset zwischen Klickpunkt und Feld
+        private Timer dragTimer=null;           // regelmäßiges Repaint für flüssiges Ziehen
 
         // --- Animation
         private boolean animating=false;
@@ -1150,6 +1151,7 @@ public class ChessGUI {
         private void onPress(MouseEvent e){
             if(e.getButton() != MouseEvent.BUTTON1) return;
             if(busy || animating) return;
+            requestFocusInWindow();
             int i = pointToSquare(e.getX(), e.getY());
             if(i==-1) return;
             Piece p = board.at(i);
@@ -1161,6 +1163,8 @@ public class ChessGUI {
             Point tl = boardIndexToVisualXY(i);
             dragOffsetX = dragX - tl.x;
             dragOffsetY = dragY - tl.y;
+            if(dragTimer==null){ dragTimer=new Timer(1000/120, ev -> repaint()); }
+            dragTimer.start();
             repaint();
         }
         private void onDrag(MouseEvent e){
@@ -1179,6 +1183,7 @@ public class ChessGUI {
             if(candidates.isEmpty()){
                 // Kein legaler Drop: zurückfallen lassen
                 dragging=false; dragPiece=null; dragOffsetX=dragOffsetY=0;
+                if(dragTimer!=null) dragTimer.stop();
                 selected=-1; legalFromSelected=List.of();
                 repaint();
                 return;
@@ -1197,6 +1202,7 @@ public class ChessGUI {
             // Animation/Move zuerst starten, danach Drag-States leeren
             playMove(chosen, () -> status.setText("Du bist dran ("+human+")."));
             dragging=false; dragPiece=null; dragOffsetX=dragOffsetY=0;
+            if(dragTimer!=null) dragTimer.stop();
             selected=-1; legalFromSelected=List.of();
             repaint();
         }
