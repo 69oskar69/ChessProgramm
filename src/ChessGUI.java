@@ -25,8 +25,8 @@ import javax.swing.event.MouseInputAdapter;
  * Schach mit Swing-GUI, KI, Analyse, Sounds, Drag & Drop und animierten Zügen.
  * - Spielerfarbe ist unten
  * - Quick-Analyse (ca. 10–30 s)
- * - ELO-Slider (800/1100/1400/1700)
- */
+ * - Suchtiefe und Engine-Pfad einstellbar
+*/
 public class ChessGUI {
     // --- Board-Konstanten & Palette ---
     private static final int TILE = 72;          // Kachelgröße in px
@@ -161,6 +161,39 @@ public class ChessGUI {
             b.wCastleK=wCastleK; b.wCastleQ=wCastleQ; b.bCastleK=bCastleK; b.bCastleQ=bCastleQ;
             b.halfmoveClock=halfmoveClock; b.fullmoveNumber=fullmoveNumber;
             return b;
+        }
+        String toFEN(){
+            StringBuilder sb=new StringBuilder();
+            for(int r=7;r>=0;r--){
+                int empty=0;
+                for(int f=0;f<8;f++){
+                    Piece p=sq[idx(f,r)];
+                    if(p==null){ empty++; }
+                    else{
+                        if(empty>0){ sb.append(empty); empty=0; }
+                        char c=switch(p.type){
+                            case KING->'k'; case QUEEN->'q'; case ROOK->'r';
+                            case BISHOP->'b'; case KNIGHT->'n'; case PAWN->'p';
+                        };
+                        sb.append(p.side==Side.WHITE? Character.toUpperCase(c):c);
+                    }
+                }
+                if(empty>0) sb.append(empty);
+                if(r>0) sb.append('/');
+            }
+            sb.append(' ');
+            sb.append(sideToMove==Side.WHITE?'w':'b');
+            sb.append(' ');
+            String cast="";
+            if(wCastleK) cast+="K"; if(wCastleQ) cast+="Q"; if(bCastleK) cast+="k"; if(bCastleQ) cast+="q";
+            sb.append(cast.isEmpty()?"-":cast);
+            sb.append(' ');
+            sb.append(enPassant==-1?"-":UCI.sq(enPassant));
+            sb.append(' ');
+            sb.append(halfmoveClock);
+            sb.append(' ');
+            sb.append(fullmoveNumber);
+            return sb.toString();
         }
         Piece at(int i){ return (i>=0&&i<64)?sq[i]:null; }
         int kingSquare(Side s){ for(int i=0;i<64;i++){ Piece p=sq[i]; if(p!=null&&p.type==PieceType.KING&&p.side==s) return i; } return -1; }
@@ -566,7 +599,9 @@ public class ChessGUI {
     private final List<PieceType> capturedByBlack = new ArrayList<>();
     private JLabel capNorthLabel, capSouthLabel;
 
-    private AI ai = new AI(3);
+    private StockfishEngine engine;
+    private AI analysisAI = new AI(3);
+    private int engineDepth = 3;
     private Side human = Side.WHITE;
     private boolean flip = false; // true = Schwarz unten
 
@@ -580,27 +615,10 @@ public class ChessGUI {
     private JPanel rightPanel;
     private JLabel depthLabel;
     private JSlider depthSlider;
+    private JTextField enginePathField;
     private JCheckBox sfxPawn, sfxExtra;
     private EvalBar evalBar;
 
-    // ELO-Stufen → Suchtiefe
-    private final int[] ELO_LEVELS = {800, 1100, 1400, 1700};
-    private int depthFromIndex(int idx){
-        return switch(idx){
-            case 0 -> 2; // ~800
-            case 1 -> 3; // ~1100
-            case 2 -> 4; // ~1400
-            default -> 5; // ~1700
-        };
-    }
-    private String labelFromIndex(int idx){
-        return switch(idx){
-            case 0 -> "leicht";
-            case 1 -> "normal";
-            case 2 -> "stark";
-            default -> "sehr stark";
-        };
-    }
 
     public static void main(String[] args){
         try{
@@ -638,6 +656,8 @@ public class ChessGUI {
         status=new JLabel("Bereit.");
         status.setBorder(new EmptyBorder(6,10,6,10));
         frame.add(status, BorderLayout.SOUTH);
+
+        restartEngine();
 
         // Direkt starten als Weiß (kein Dialog)
         newGame(Side.WHITE);
@@ -703,23 +723,27 @@ public class ChessGUI {
         p.setOpaque(false);
         p.setLayout(new BoxLayout(p, BoxLayout.Y_AXIS));
 
-        JLabel diffLbl=new JLabel("KI‑Schwierigkeit (ELO)");
+        JLabel pathLbl=new JLabel("Engine Pfad");
+        pathLbl.setAlignmentX(Component.LEFT_ALIGNMENT);
+        p.add(pathLbl);
+
+        enginePathField=new JTextField("stockfish");
+        enginePathField.setAlignmentX(Component.LEFT_ALIGNMENT);
+        enginePathField.addActionListener(e -> restartEngine());
+        p.add(enginePathField);
+        p.add(Box.createVerticalStrut(12));
+
+        JLabel diffLbl=new JLabel("Suchtiefe");
         diffLbl.setAlignmentX(Component.LEFT_ALIGNMENT);
         p.add(diffLbl);
 
-        depthSlider=new JSlider(0, ELO_LEVELS.length-1, 1); // default ~1100 → Tiefe 3
+        depthSlider=new JSlider(1, 20, engineDepth);
         depthSlider.setPaintTicks(true);
         depthSlider.setMajorTickSpacing(1);
-        depthSlider.setSnapToTicks(true);
         depthSlider.setPaintLabels(true);
-        Hashtable<Integer, JLabel> labels = new Hashtable<>();
-        for (int i=0;i<ELO_LEVELS.length;i++) labels.put(i, new JLabel(String.valueOf(ELO_LEVELS[i])));
-        depthSlider.setLabelTable(labels);
-
-        ai.setDepth(depthFromIndex(depthSlider.getValue()));
-        depthLabel=new JLabel();
         depthSlider.addChangeListener(e -> updateDepthLabel());
-        updateDepthLabel(); // initial
+        depthLabel=new JLabel();
+        updateDepthLabel();
 
         depthSlider.setAlignmentX(Component.LEFT_ALIGNMENT);
         p.add(depthSlider);
@@ -763,9 +787,19 @@ public class ChessGUI {
     }
 
     private void updateDepthLabel(){
-        int idx = depthSlider.getValue();
-        ai.setDepth(depthFromIndex(idx));
-        depthLabel.setText("ELO ca. " + ELO_LEVELS[idx] + "  –  " + labelFromIndex(idx) + "  (Tiefe " + ai.getDepth() + ")");
+        engineDepth = depthSlider.getValue();
+        analysisAI.setDepth(engineDepth);
+        depthLabel.setText("Tiefe " + engineDepth);
+    }
+
+    private void restartEngine(){
+        if(engine!=null) engine.stop();
+        engine = new StockfishEngine(enginePathField.getText().trim());
+        try{
+            engine.start();
+        }catch(Exception ex){
+            status.setText("Engine konnte nicht gestartet werden.");
+        }
     }
 
     private void newGame(Side side){
@@ -815,7 +849,7 @@ public class ChessGUI {
         status.setText("Hint wird berechnet…");
         busy = true;
         new SwingWorker<Move,Void>(){
-            @Override protected Move doInBackground(){ return ai.findBestMove(board); }
+            @Override protected Move doInBackground(){ return engine.getBestMove(board.toFEN(), engineDepth); }
             @Override protected void done(){
                 try{
                     hintMove = get();
@@ -837,10 +871,10 @@ public class ChessGUI {
         if(busy) return;
         if(board.legalMoves().isEmpty()){ onGameOverWithAnalysis(); return; }
         if(board.sideToMove!=human){
-            status.setText("KI denkt… (Tiefe "+ai.getDepth()+")");
+            status.setText("KI denkt… (Tiefe "+engineDepth+")");
             busy=true;
             new SwingWorker<Move,Void>(){
-                @Override protected Move doInBackground(){ return ai.findBestMove(board); }
+                @Override protected Move doInBackground(){ return engine.getBestMove(board.toFEN(), engineDepth); }
                 @Override protected void done(){
                     try{
                         Move m=get();
@@ -1038,7 +1072,7 @@ public class ChessGUI {
         final int MAX_PLIES = 80;                 // analysiere nur die letzten 80 Halbzüge
         final long TIME_BUDGET_MS = 20_000L;      // ~20 Sekunden Budget
         final int TOP_K = 8;                      // Top-K Wurzelzüge
-        final int ANALYSIS_DEPTH = Math.min(3, ai.getDepth()); // Tiefe 2–3 reicht meist
+        final int ANALYSIS_DEPTH = Math.min(3, analysisAI.getDepth()); // Tiefe 2–3 reicht meist
 
         final int totalPlies = plies.size();
         final int startIndex = Math.max(0, totalPlies - MAX_PLIES);
@@ -1064,8 +1098,8 @@ public class ChessGUI {
                     PlyRecord pr = plies.get(i);
                     Side mover = pr.before.sideToMove;
 
-                    int bestScore   = ai.bestScoreApprox(pr.before, ANALYSIS_DEPTH, TOP_K);
-                    int chosenScore = ai.scoreMove(pr.before, pr.move, ANALYSIS_DEPTH);
+                    int bestScore   = analysisAI.bestScoreApprox(pr.before, ANALYSIS_DEPTH, TOP_K);
+                    int chosenScore = analysisAI.scoreMove(pr.before, pr.move, ANALYSIS_DEPTH);
 
                     int loss = Math.max(0, toCp(bestScore) - toCp(chosenScore));
                     int evalAfterW = (mover==Side.WHITE) ? toCp(chosenScore) : -toCp(chosenScore);
@@ -1076,7 +1110,7 @@ public class ChessGUI {
                     int moveNo = pr.before.fullmoveNumber;
                     String moveStr = pretty(pr.move);
 
-                    List<AI.ScoredMove> root = ai.analyzeRoot(pr.before, 1); // nur 1 Ply fürs Label – billig
+                    List<AI.ScoredMove> root = analysisAI.analyzeRoot(pr.before, 1); // nur 1 Ply fürs Label – billig
                     root.sort((x,y)-> Integer.compare(y.score, x.score));
                     String bestStr = root.isEmpty()? moveStr : pretty(root.get(0).move);
 
